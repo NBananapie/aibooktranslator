@@ -35,6 +35,11 @@ export default function PdfTranslator() {
   const [isPreTranslating, setIsPreTranslating] = useState<boolean>(false);
   const [translationCache, setTranslationCache] = useState<Record<number, string>>({});
 
+  const [leftPaneWidth, setLeftPaneWidth] = useState<number>(50);
+  const [isImmersive, setIsImmersive] = useState<boolean>(false);
+  const [isResizing, setIsResizing] = useState<boolean>(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
   const currentPageRef = useRef<number>(pageNumber);
 
   // Smooth typewriter animation effect
@@ -42,7 +47,9 @@ export default function PdfTranslator() {
     let rafId: number;
     const tick = () => {
       setDisplayedText((prev) => {
-        const target = fullTextRef.current;
+        // Strip out reasoning blocks <think>...</think> from the stream
+        const target = fullTextRef.current.replace(/<think>[\s\S]*?(<\/think>|$)/g, '').trimStart();
+        
         if (prev.length < target.length) {
           const diff = target.length - prev.length;
           const charsToAdd = Math.max(1, Math.ceil(diff / 5));
@@ -184,10 +191,12 @@ export default function PdfTranslator() {
         }
       }
 
+      const finalCleanText = currentText.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+
       if (currentPageRef.current === pageNumber) {
-        setTranslatedText(currentText);
+        setTranslatedText(finalCleanText);
       }
-      setTranslationCache(prev => ({ ...prev, [pageNumber]: currentText }));
+      setTranslationCache(prev => ({ ...prev, [pageNumber]: finalCleanText }));
 
     } catch (err: any) {
       console.error(err);
@@ -255,7 +264,8 @@ export default function PdfTranslator() {
         if (value) fullNextText += decoder.decode(value, { stream: true });
       }
 
-      setTranslationCache(prev => ({ ...prev, [nextPage]: fullNextText }));
+      const finalCleanText = fullNextText.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+      setTranslationCache(prev => ({ ...prev, [nextPage]: finalCleanText }));
     } catch (err) {
       console.error("Pre-translation error:", err);
     } finally {
@@ -273,9 +283,55 @@ export default function PdfTranslator() {
     }
   }, [file, pageNumber, autoTranslate, translateCurrentPage]);
 
-  const changePage = (offset: number) => {
+  const changePage = useCallback((offset: number) => {
     setPageNumber(prev => Math.min(Math.max(1, prev + offset), numPages));
-  };
+  }, [numPages]);
+
+  // Keyboard navigation
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement).tagName)) return;
+      
+      if (e.key === 'ArrowLeft') {
+        changePage(-1);
+      } else if (e.key === 'ArrowRight') {
+        changePage(1);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [changePage]);
+
+  // Split pane resizing logic
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isResizing || !containerRef.current) return;
+      
+      const containerRect = containerRef.current.getBoundingClientRect();
+      // Calculate percentage, offset slightly for the gap
+      const newLeftWidth = ((e.clientX - containerRect.left) / containerRect.width) * 100;
+      
+      if (newLeftWidth > 20 && newLeftWidth < 80) {
+        setLeftPaneWidth(newLeftWidth);
+      }
+    };
+
+    const handleMouseUp = () => setIsResizing(false);
+
+    if (isResizing) {
+      document.addEventListener('mousemove', handleMouseMove);
+      document.addEventListener('mouseup', handleMouseUp);
+      document.body.style.userSelect = 'none';
+    } else {
+      document.body.style.userSelect = '';
+    }
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isResizing]);
 
   const downloadMarkdown = () => {
     if (!file || Object.keys(translationCache).length === 0) return;
@@ -301,7 +357,7 @@ export default function PdfTranslator() {
   };
 
   return (
-    <div className={styles.container}>
+    <div className={styles.container} ref={containerRef}>
       {!file && (
         <div className={styles.uploadOverlay}>
            <div className={styles.spinner} />
@@ -310,8 +366,9 @@ export default function PdfTranslator() {
       )}
 
       {/* Left Pane - PDF Viewer */}
-      <div className={styles.leftPane}>
-        <div className={styles.header}>
+      {!isImmersive && (
+        <div className={styles.leftPane} style={{ flexBasis: `calc(${leftPaneWidth}% - 8px)`, flexGrow: 0, flexShrink: 0 }}>
+          <div className={styles.header}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
              <button className={styles.btnSecondary} onClick={() => router.push('/')}>← 返回主页</button>
              <h2>原始 PDF {file && `(${file.name})`}</h2>
@@ -354,12 +411,37 @@ export default function PdfTranslator() {
           )}
         </div>
       </div>
+      )}
+
+      {/* Resizer handle */}
+      {!isImmersive && (
+        <div 
+          className={styles.resizer}
+          onMouseDown={() => setIsResizing(true)}
+        />
+      )}
 
       {/* Right Pane - Translation */}
-      <div className={styles.rightPane}>
+      <div 
+        className={styles.rightPane} 
+        style={{ 
+          flexBasis: isImmersive ? '100%' : `calc(${100 - leftPaneWidth}% - 8px)`,
+          flexGrow: isImmersive ? 1 : 0, 
+          flexShrink: 0 
+        }}
+      >
         <div className={styles.header}>
           <h2>翻译结果 (中文)</h2>
           <div className={styles.controls}>
+            <label style={{ fontSize: '14px', display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', background: 'var(--primary)', color: 'white', padding: '6px 12px', borderRadius: '6px' }}>
+              <input 
+                type="checkbox" 
+                checked={isImmersive} 
+                onChange={(e) => setIsImmersive(e.target.checked)} 
+                style={{ margin: 0 }}
+              />
+              沉浸模式
+            </label>
             <button 
               className={styles.btnSecondary} 
               onClick={downloadMarkdown} 
@@ -395,14 +477,24 @@ export default function PdfTranslator() {
           {isTranslating && !displayedText ? (
             <div className={styles.loadingOverlay}>
               <div className={styles.spinner} />
-              <p>正在连接 AI 引擎...</p>
+              <p>{fullTextRef.current.includes('<think>') ? 'AI 正在深度思考中...' : '正在连接 AI 引擎...'}</p>
             </div>
           ) : error ? (
             <div style={{ color: 'red' }}>翻译失败: {error}</div>
           ) : (
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>
-              {displayedText ? displayedText + (isTranslating ? ' ▍' : '') : '待翻译或缓存中...'}
-            </ReactMarkdown>
+            <div 
+              style={{ 
+                maxWidth: isImmersive ? '800px' : 'none', 
+                margin: isImmersive ? '0 auto' : '0',
+                fontSize: isImmersive ? '18px' : '16px',
+                lineHeight: isImmersive ? '2' : '1.8',
+                transition: 'all 0.3s ease'
+              }}
+            >
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                {displayedText ? displayedText + (isTranslating ? ' ▍' : '') : '待翻译或缓存中...'}
+              </ReactMarkdown>
+            </div>
           )}
         </div>
       </div>

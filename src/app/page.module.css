@@ -2,6 +2,8 @@
   display: flex;
   height: 100vh;
   width: 100vw;
+  padding: 16px;
+  gap: 16px;
   overflow: hidden;
   position: relative;
 }
@@ -53,26 +55,53 @@
 }
 
 .leftPane {
-  flex: 1;
-  border-right: 1px solid var(--glass-border);
+  border-radius: 16px;
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  box-shadow: var(--shadow-lg);
   display: flex;
   flex-direction: column;
-  background: var(--background);
   overflow: hidden;
+  transition: flex-basis 0.1s ease;
 }
 
 .rightPane {
-  flex: 1;
+  border-radius: 16px;
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  box-shadow: var(--shadow-lg);
   display: flex;
   flex-direction: column;
-  background: #ffffff; /* keep right pane white for text readability */
   overflow: hidden;
+  transition: flex-basis 0.1s ease;
 }
 
-@media (prefers-color-scheme: dark) {
-  .rightPane {
-    background: #0f172a;
-  }
+.resizer {
+  width: 12px;
+  cursor: col-resize;
+  border-radius: 6px;
+  margin: 0 -6px;
+  z-index: 10;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.resizer::after {
+  content: '';
+  width: 4px;
+  height: 48px;
+  background: var(--glass-border);
+  border-radius: 2px;
+  transition: background 0.2s;
+}
+
+.resizer:hover::after, .resizer:active::after {
+  background: var(--primary);
 }
 
 .header {
@@ -126,13 +155,6 @@
   display: flex;
   justify-content: center;
   padding: 24px;
-  background: #e2e8f0;
-}
-
-@media (prefers-color-scheme: dark) {
-  .pdfWrapper {
-    background: #1e293b;
-  }
 }
 
 .markdownWrapper {
