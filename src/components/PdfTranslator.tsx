@@ -172,8 +172,16 @@ export default function PdfTranslator() {
       });
 
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || 'Translation request failed');
+        const errorText = await response.text().catch(() => 'Unknown error');
+        let errorMessage = 'Translation request failed';
+        try {
+          const errorData = JSON.parse(errorText);
+          errorMessage = errorData.error || errorMessage;
+        } catch (e) {
+          // If not JSON, show the status and start of text
+          errorMessage = `Status ${response.status}: ${errorText.slice(0, 100)}`;
+        }
+        throw new Error(errorMessage);
       }
       if (!response.body) throw new Error('ReadableStream not supported by the browser.');
 
