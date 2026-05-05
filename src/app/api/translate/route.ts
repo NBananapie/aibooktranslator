@@ -9,8 +9,8 @@ export async function POST(req: Request) {
     const { 
       text, 
       targetLanguage = '中文', 
-      apiKey, 
-      baseUrl, 
+      apiKey: clientApiKey, 
+      baseUrl: clientBaseUrl, 
       customPrompt 
     } = body;
 
@@ -18,9 +18,22 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'No text provided' }, { status: 400 });
     }
 
+    // 显式获取环境变量，并增加调试信息
+    const envApiKey = process.env.MINIMAX_API_KEY;
+    const envBaseUrl = process.env.MINIMAX_BASE_URL;
+
+    const finalApiKey = clientApiKey || envApiKey;
+    const finalBaseUrl = clientBaseUrl || envBaseUrl;
+
+    if (!finalApiKey) {
+      return NextResponse.json({ 
+        error: 'Missing API Key. Please set MINIMAX_API_KEY in Cloudflare dashboard (Settings -> Functions -> Environment variables).' 
+      }, { status: 401 });
+    }
+
     const openai = new OpenAI({
-      apiKey: apiKey || process.env.MINIMAX_API_KEY,
-      baseURL: baseUrl || process.env.MINIMAX_BASE_URL,
+      apiKey: finalApiKey,
+      baseURL: finalBaseUrl || 'https://api.minimax.chat/v1',
     });
 
     const systemPrompt = customPrompt || `You are a professional translator. Translate the following text into ${targetLanguage}. 
@@ -34,29 +47,29 @@ IMPORTANT RULES:
     const response = await openai.chat.completions.create({
       model: 'MiniMax-M2.7-highspeed',
       messages: [
-        {
-          role: 'system',
-          content: systemPrompt
-        },
-        {
-          role: 'user',
-          content: text
-        }
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: text }
       ],
       temperature: 0.3,
       stream: true,
-      max_tokens: 8192,
     });
 
     const stream = new ReadableStream({
       async start(controller) {
-        for await (const chunk of response) {
-          const content = chunk.choices[0]?.delta?.content || '';
-          if (content) {
-            controller.enqueue(new TextEncoder().encode(content));
+        const encoder = new TextEncoder();
+        try {
+          for await (const chunk of response) {
+            const content = chunk.choices[0]?.delta?.content || '';
+            if (content) {
+              controller.enqueue(encoder.encode(content));
+            }
           }
+        } catch (e: any) {
+          console.error('Stream error:', e);
+          controller.error(e);
+        } finally {
+          controller.close();
         }
-        controller.close();
       }
     });
 
@@ -64,13 +77,20 @@ IMPORTANT RULES:
       headers: {
         'Content-Type': 'text/plain; charset=utf-8',
         'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
       },
     });
   } catch (error: any) {
     console.error('Translation API Error:', error);
+    
+    // 返回更详细的错误信息给前端
+    const errorMessage = error.message || 'Unknown error';
+    const errorDetails = error.response?.data || error.stack || '';
+    
     return NextResponse.json(
-      { error: error.message || 'An error occurred during translation' },
+      { 
+        error: `API Error: ${errorMessage}`,
+        details: errorDetails
+      },
       { status: 500 }
     );
   }
