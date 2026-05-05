@@ -171,7 +171,10 @@ export default function PdfTranslator() {
         }),
       });
 
-      if (!response.ok) throw new Error('Translation request failed');
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || 'Translation request failed');
+      }
       if (!response.body) throw new Error('ReadableStream not supported by the browser.');
 
       const reader = response.body.getReader();
