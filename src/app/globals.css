@@ -13,6 +13,13 @@
   --glass-bg: rgba(255, 255, 255, 0.6);
   --glass-border: rgba(255, 255, 255, 0.3);
   --glass-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.07);
+  --bg-mesh: radial-gradient(at 40% 20%, hsla(210, 100%, 93%, 1) 0px, transparent 50%),
+             radial-gradient(at 80% 0%, hsla(189, 100%, 86%, 1) 0px, transparent 50%),
+             radial-gradient(at 0% 50%, hsla(333, 100%, 93%, 1) 0px, transparent 50%),
+             radial-gradient(at 80% 50%, hsla(268, 100%, 93%, 1) 0px, transparent 50%),
+             radial-gradient(at 0% 100%, hsla(22, 100%, 88%, 1) 0px, transparent 50%),
+             radial-gradient(at 80% 100%, hsla(242, 100%, 88%, 1) 0px, transparent 50%),
+             radial-gradient(at 0% 0%, hsla(343, 100%, 93%, 1) 0px, transparent 50%);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -26,6 +33,13 @@
     --glass-bg: rgba(30, 41, 59, 0.6);
     --glass-border: rgba(255, 255, 255, 0.05);
     --glass-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
+    --bg-mesh: radial-gradient(at 40% 20%, hsla(210, 50%, 15%, 1) 0px, transparent 50%),
+               radial-gradient(at 80% 0%, hsla(189, 50%, 15%, 1) 0px, transparent 50%),
+               radial-gradient(at 0% 50%, hsla(333, 50%, 15%, 1) 0px, transparent 50%),
+               radial-gradient(at 80% 50%, hsla(268, 50%, 15%, 1) 0px, transparent 50%),
+               radial-gradient(at 0% 100%, hsla(22, 50%, 15%, 1) 0px, transparent 50%),
+               radial-gradient(at 80% 100%, hsla(242, 50%, 15%, 1) 0px, transparent 50%),
+               radial-gradient(at 0% 0%, hsla(343, 50%, 15%, 1) 0px, transparent 50%);
   }
 }
 
@@ -36,7 +50,9 @@ html, body {
 }
 
 body {
-  background: var(--background);
+  background-color: var(--background);
+  background-image: var(--bg-mesh);
+  background-attachment: fixed;
   color: var(--foreground);
   font-family: 'Inter', sans-serif;
   -webkit-font-smoothing: antialiased;

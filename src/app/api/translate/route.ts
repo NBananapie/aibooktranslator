@@ -32,7 +32,7 @@ IMPORTANT RULES:
 4. Output ONLY the translated text in Markdown. Do NOT include any conversational filler.`;
 
     const response = await openai.chat.completions.create({
-      model: 'abab6.5s-chat',
+      model: 'MiniMax-M2.7-highspeed',
       messages: [
         {
           role: 'system',
