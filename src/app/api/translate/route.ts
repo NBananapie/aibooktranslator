@@ -1,5 +1,4 @@
 import { NextResponse } from 'next/server';
-import OpenAI from 'openai';
 
 export const runtime = 'edge';
 
@@ -18,23 +17,17 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'No text provided' }, { status: 400 });
     }
 
-    // 显式获取环境变量，并增加调试信息
-    const envApiKey = process.env.MINIMAX_API_KEY;
-    const envBaseUrl = process.env.MINIMAX_BASE_URL;
+    // 环境变量获取
+    const apiKey = clientApiKey || process.env.MINIMAX_API_KEY;
+    let baseUrl = clientBaseUrl || process.env.MINIMAX_BASE_URL || 'https://api.minimax.chat/v1';
+    
+    // 自动修正 baseUrl 格式
+    if (!baseUrl.endsWith('/')) baseUrl += '/';
+    const apiUrl = `${baseUrl}chat/completions`;
 
-    const finalApiKey = clientApiKey || envApiKey;
-    const finalBaseUrl = clientBaseUrl || envBaseUrl;
-
-    if (!finalApiKey) {
-      return NextResponse.json({ 
-        error: 'Missing API Key. Please set MINIMAX_API_KEY in Cloudflare dashboard (Settings -> Functions -> Environment variables).' 
-      }, { status: 401 });
+    if (!apiKey) {
+      return NextResponse.json({ error: 'Missing API Key' }, { status: 401 });
     }
-
-    const openai = new OpenAI({
-      apiKey: finalApiKey,
-      baseURL: finalBaseUrl || 'https://api.minimax.chat/v1',
-    });
 
     const systemPrompt = customPrompt || `You are a professional translator. Translate the following text into ${targetLanguage}. 
           
@@ -44,28 +37,72 @@ IMPORTANT RULES:
 3. Preserve the EXACT original formatting, paragraph structure, and line breaks. If there are headings, lists, or code blocks, keep them in Markdown format.
 4. Output ONLY the translated text in Markdown. Do NOT include any conversational filler.`;
 
-    const response = await openai.chat.completions.create({
-      model: 'MiniMax-M2.7-highspeed',
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: text }
-      ],
-      temperature: 0.3,
-      stream: true,
+    // 使用原生 fetch 代替 openai 库，确保在 Cloudflare Edge 上 100% 稳定
+    const response = await fetch(apiUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: 'MiniMax-M2.7-highspeed',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: text }
+        ],
+        temperature: 0.3,
+        stream: true,
+      }),
     });
 
+    if (!response.ok) {
+      const errorText = await response.text();
+      return NextResponse.json({ 
+        error: `API returned ${response.status}`, 
+        details: errorText 
+      }, { status: response.status });
+    }
+
+    // 处理流式响应
     const stream = new ReadableStream({
       async start(controller) {
+        const reader = response.body?.getReader();
+        if (!reader) {
+          controller.close();
+          return;
+        }
+
+        const decoder = new TextDecoder();
         const encoder = new TextEncoder();
+        let buffer = '';
+
         try {
-          for await (const chunk of response) {
-            const content = chunk.choices[0]?.delta?.content || '';
-            if (content) {
-              controller.enqueue(encoder.encode(content));
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+              const cleanedLine = line.trim();
+              if (!cleanedLine || cleanedLine === 'data: [DONE]') continue;
+              
+              if (cleanedLine.startsWith('data: ')) {
+                try {
+                  const data = JSON.parse(cleanedLine.slice(6));
+                  const content = data.choices[0]?.delta?.content || '';
+                  if (content) {
+                    controller.enqueue(encoder.encode(content));
+                  }
+                } catch (e) {
+                  console.error('Error parsing stream chunk', e);
+                }
+              }
             }
           }
-        } catch (e: any) {
-          console.error('Stream error:', e);
+        } catch (e) {
           controller.error(e);
         } finally {
           controller.close();
@@ -79,18 +116,11 @@ IMPORTANT RULES:
         'Cache-Control': 'no-cache',
       },
     });
+
   } catch (error: any) {
-    console.error('Translation API Error:', error);
-    
-    // 返回更详细的错误信息给前端
-    const errorMessage = error.message || 'Unknown error';
-    const errorDetails = error.response?.data || error.stack || '';
-    
+    console.error('Edge Route Error:', error);
     return NextResponse.json(
-      { 
-        error: `API Error: ${errorMessage}`,
-        details: errorDetails
-      },
+      { error: `Internal Server Error: ${error.message}` },
       { status: 500 }
     );
   }
