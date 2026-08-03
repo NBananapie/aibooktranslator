@@ -10,6 +10,7 @@ export async function POST(req: Request) {
       targetLanguage = '中文', 
       apiKey: clientApiKey, 
       baseUrl: clientBaseUrl, 
+      model: clientModel,
       customPrompt 
     } = body;
 
@@ -17,16 +18,23 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'No text provided' }, { status: 400 });
     }
 
-    // 环境变量获取
-    const apiKey = clientApiKey || process.env.MINIMAX_API_KEY;
+    // 默认只接受调用方自带的 Key。若要临时开放服务端 Key，需显式设置 ALLOW_SERVER_API_KEY=true。
+    const allowServerKey = process.env.ALLOW_SERVER_API_KEY === 'true';
+    const apiKey = clientApiKey || (allowServerKey ? process.env.MINIMAX_API_KEY : undefined);
     let baseUrl = clientBaseUrl || process.env.MINIMAX_BASE_URL || 'https://api.minimax.chat/v1';
     
     // 自动修正 baseUrl 格式
     if (!baseUrl.endsWith('/')) baseUrl += '/';
     const apiUrl = `${baseUrl}chat/completions`;
 
+    // 模型名随 Key 一起由调用方决定，这样任何 OpenAI 兼容端点都能直接用。
+    const model = clientModel || process.env.TRANSLATE_MODEL || 'MiniMax-M2.7-highspeed';
+
     if (!apiKey) {
-      return NextResponse.json({ error: 'Missing API Key' }, { status: 401 });
+      return NextResponse.json(
+        { error: '请先在「设置」里填入你自己的 API Key（不会上传或保存）' },
+        { status: 401 }
+      );
     }
 
     const systemPrompt = customPrompt || `You are a professional translator. Translate the following text into ${targetLanguage}. 
@@ -45,7 +53,7 @@ IMPORTANT RULES:
         'Authorization': `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: 'MiniMax-M2.7-highspeed',
+        model,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: text }
