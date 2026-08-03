@@ -167,6 +167,7 @@ export default function PdfTranslator() {
           targetLanguage: '中文',
           apiKey: settings.apiKey,
           baseUrl: settings.baseUrl,
+          model: settings.model,
           customPrompt: settings.customPrompt
         }),
       });
@@ -258,6 +259,7 @@ export default function PdfTranslator() {
           targetLanguage: '中文',
           apiKey: settings.apiKey,
           baseUrl: settings.baseUrl,
+          model: settings.model,
           customPrompt: settings.customPrompt
         }),
       });
@@ -359,6 +361,9 @@ export default function PdfTranslator() {
     const maxPage = sortedPages[sortedPages.length - 1];
     const filename = `${file.name.replace('.pdf', '')}_Pages_${minPage}_to_${maxPage}.md`;
     
+    const ref = '?utm_source=export&utm_medium=referral&utm_campaign=bilingual_export';
+    mdContent += `> 由 [AI PDF Translator](https://aitranslator.justganit.com/${ref}) 生成 —— 完整双语对照阅读，自带 API Key，内容不上传。\n>\n> 更多工具见 [JustGanIt](https://justganit.com/${ref})\n`;
+
     const blob = new Blob([mdContent], { type: 'text/markdown;charset=utf-8;' });
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);

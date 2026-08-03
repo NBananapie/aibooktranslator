@@ -6,6 +6,14 @@ import { useAppContext, AppSettings } from '@/context/AppContext';
 import { getAllHistoryMetadata, saveHistoryRecord, HistoryRecord, deleteHistoryRecord } from '@/lib/db';
 import styles from './page.module.css';
 
+const PROVIDER_PRESETS = [
+  { label: 'MiniMax', baseUrl: 'https://api.minimax.chat/v1', model: 'MiniMax-M2.7-highspeed' },
+  { label: 'Gemini（有免费额度）', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/', model: '' },
+  { label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', model: '' },
+];
+
+const hintStyle: React.CSSProperties = { fontSize: '12px', color: '#6b6b70', marginTop: '4px', lineHeight: 1.5 };
+
 export default function Home() {
   const router = useRouter();
   const { settings, setSettings, setActiveFileId } = useAppContext();
@@ -155,13 +163,36 @@ export default function Home() {
           <div className={styles.modalContent} onClick={e => e.stopPropagation()}>
             <h2>引擎设置</h2>
             <div className={styles.formGroup}>
+              <label>选择服务商</label>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                {PROVIDER_PRESETS.map(preset => (
+                  <button
+                    key={preset.label}
+                    type="button"
+                    className={styles.btnSecondary}
+                    onClick={() => setFormSettings({ ...formSettings, baseUrl: preset.baseUrl, model: preset.model })}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+              <p style={hintStyle}>
+                任何兼容 OpenAI Chat Completions 的服务都能用。没有 Key？可以先去{' '}
+                <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer">
+                  Google AI Studio
+                </a>{' '}
+                免费领一个 Gemini Key，再回来选「Gemini」并填入模型名。
+              </p>
+            </div>
+            <div className={styles.formGroup}>
               <label>API Key</label>
               <input 
                 type="password" 
                 value={formSettings.apiKey} 
                 onChange={e => setFormSettings({...formSettings, apiKey: e.target.value})}
-                placeholder="留空则使用默认环境变量"
+                placeholder="填入你自己的 API Key"
               />
+              <p style={hintStyle}>Key 只保存在这台浏览器的本地存储里，不会上传，也不会被保存到服务器。</p>
             </div>
             <div className={styles.formGroup}>
               <label>Base URL</label>
@@ -170,6 +201,16 @@ export default function Home() {
                 value={formSettings.baseUrl} 
                 onChange={e => setFormSettings({...formSettings, baseUrl: e.target.value})}
               />
+            </div>
+            <div className={styles.formGroup}>
+              <label>模型名</label>
+              <input 
+                type="text" 
+                value={formSettings.model} 
+                onChange={e => setFormSettings({...formSettings, model: e.target.value})}
+                placeholder="例如 MiniMax-M2.7-highspeed"
+              />
+              <p style={hintStyle}>换服务商时必须改成该服务实际可用的模型名，否则请求会被拒绝。</p>
             </div>
             <div className={styles.formGroup}>
               <label>翻译提示词 (System Prompt)</label>
