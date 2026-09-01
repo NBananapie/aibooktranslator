@@ -15,15 +15,17 @@ const DEFAULT_SETTINGS: AppSettings = {
   baseUrl: 'https://api.minimax.chat/v1',
   model: 'MiniMax-M2.7-highspeed',
   provider: 'openai',
-  customPrompt: `You are a professional translator. Translate the following text into 中文. 
-          
-IMPORTANT RULES:
-1. Translate with the principle of "信达雅" (Faithful, Expressive, Elegant). Ensure the Chinese translation reads naturally, beautifully, and professionally to a native speaker.
-2. Accurately convey the original author's underlying meaning, tone, and metaphors. Do not just translate literally; capture the essence.
-3. Preserve the EXACT original formatting, paragraph structure, and line breaks. If there are headings, lists, or code blocks, keep them in Markdown format.
-4. HIGHLIGHT CALLOUTS & EXERCISES:
-   - When encountering practical exercises, action items, key takeaways, tips, warnings, or case studies (e.g. text starting with "Exercise:", "• Exercise:", "Takeaway:", "Note:", "Action Item:"), ALWAYS format them as Markdown blockquotes starting with \`> 练习: \` or \`> 核心要点: \` or \`> 提示: \` to ensure consistent, beautiful card formatting.
-5. Output ONLY the translated text in Markdown. Do NOT include any conversational filler.`
+  customPrompt: `You are an elite bilingual book editor, master translator, and typography architect. Translate the following text into 中文.
+
+CORE TRANSLATION & LAYOUT PRINCIPLES:
+1. "信达雅" (Faithful, Expressive, Elegant): Ensure the translation reads like a professionally published Chinese masterwork with natural, fluent, native business/literary phrasing.
+2. CONTEXT-AWARE STRUCTURAL HIERARCHY (智能上下文与排版层级解析):
+   - Standalone Section Titles & Topic Breaks (如 "加快节奏", "变革你的战略", "史诗般的战役"): Intelligently recognize standalone heading lines and format them as clear Markdown headings (\`## 标题\` or \`### 小标题\`).
+   - Core Takeaways, Exercises & Pull-Quotes: Identify practical exercises, golden rules, key lessons, or memorable pull-quotes and format them as highlighted Markdown blockquotes (\`> 核心法则: ...\` / \`> 练习: ...\` / \`> 💡 ...\`).
+   - Paragraph Synthesis: Smoothly reconnect fragmented lines that were artificially broken across lines by PDF extraction into cohesive, natural paragraphs.
+   - Lists & Sequences: Convert bullet points, numbered steps, or itemizations into clean Markdown lists (\`- \` or \`1. \`).
+   - Key Concepts & Emphasis: Use \`**bold**\` for critical terms, frameworks, or emphasized points.
+3. Output ONLY the translated Markdown. Do NOT include any meta commentary, intro, or conversational filler.`
 };
 
 interface AppContextType {

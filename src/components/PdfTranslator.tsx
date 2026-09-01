@@ -407,6 +407,8 @@ export default function PdfTranslator() {
     URL.revokeObjectURL(link.href);
   };
 
+  const [fullWidthReading, setFullWidthReading] = useState<boolean>(false);
+
   return (
     <div className={styles.container} ref={containerRef}>
       {!file && (
@@ -516,7 +518,11 @@ export default function PdfTranslator() {
               </button>
             )}
             AI 译文 (中文)
-            {translationCache[pageNumber] && <span className={styles.badge} style={{ marginLeft: '6px' }}>已缓存</span>}
+            {isTranslating ? (
+              <span className={styles.badge} style={{ marginLeft: '6px' }}>⚡ 实时流式生成中</span>
+            ) : translationCache[pageNumber] ? (
+              <span className={styles.badge} style={{ marginLeft: '6px' }}>已缓存</span>
+            ) : null}
           </h2>
           <div className={styles.controls}>
             <button 
@@ -527,6 +533,17 @@ export default function PdfTranslator() {
             >
               {theme === 'dark' ? '☀️' : '🌙'}
             </button>
+
+            {isImmersive && (
+              <button
+                type="button"
+                className={styles.btnSecondary}
+                onClick={() => setFullWidthReading(w => !w)}
+                title="切换阅读栏宽度"
+              >
+                {fullWidthReading ? '🗖 居中阅读' : '🗗 铺满全宽'}
+              </button>
+            )}
 
             <label style={{ fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', background: 'var(--primary-surface)', border: '1px solid var(--primary-border)', color: 'var(--primary)', padding: '6px 12px', borderRadius: '10px', fontWeight: 600 }}>
               <input 
@@ -569,7 +586,7 @@ export default function PdfTranslator() {
               onClick={() => translateCurrentPage(true)} 
               disabled={!file || isTranslating}
             >
-              {translatedText ? '重新翻译' : '翻译此页'}
+              {isTranslating ? '生成中...' : translatedText ? '重新翻译' : '翻译此页'}
             </button>
           </div>
         </div>
@@ -587,11 +604,11 @@ export default function PdfTranslator() {
           ) : (
             <div 
               style={{ 
-                maxWidth: isImmersive ? '760px' : 'none', 
+                maxWidth: isImmersive ? (fullWidthReading ? '100%' : '900px') : 'none', 
                 margin: isImmersive ? '0 auto' : '0',
-                fontSize: isImmersive ? '17px' : '15px',
+                fontSize: isImmersive ? '17px' : '15.5px',
                 lineHeight: isImmersive ? '2.0' : '1.85',
-                transition: 'all 0.3s ease'
+                transition: 'all 0.25s ease'
               }}
             >
               <ReactMarkdown remarkPlugins={[remarkGfm]}>
