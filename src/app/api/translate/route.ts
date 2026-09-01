@@ -39,7 +39,6 @@ async function handleGeminiStream(params: {
     headers: {
       'Content-Type': 'application/json',
       'x-goog-api-key': apiKey,
-      'Authorization': `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
       contents: [
