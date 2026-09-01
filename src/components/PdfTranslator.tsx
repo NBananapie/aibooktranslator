@@ -18,7 +18,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL(
 ).toString();
 
 export default function PdfTranslator() {
-  const { settings, activeFileId } = useAppContext();
+  const { settings, activeFileId, theme, toggleTheme } = useAppContext();
   const router = useRouter();
 
   const [dbRecord, setDbRecord] = useState<HistoryRecord | null>(null);
@@ -39,8 +39,12 @@ export default function PdfTranslator() {
   const [isImmersive, setIsImmersive] = useState<boolean>(false);
   const [isResizing, setIsResizing] = useState<boolean>(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const pdfWrapperRef = useRef<HTMLDivElement>(null);
+  const [pdfRenderWidth, setPdfRenderWidth] = useState<number>(600);
+  const [zoomScale, setZoomScale] = useState<number>(1.0);
 
   const currentPageRef = useRef<number>(pageNumber);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   // Smooth typewriter animation effect
   useEffect(() => {
@@ -52,7 +56,7 @@ export default function PdfTranslator() {
         
         if (prev.length < target.length) {
           const diff = target.length - prev.length;
-          const charsToAdd = Math.max(1, Math.ceil(diff / 5));
+          const charsToAdd = Math.max(1, Math.ceil(diff / 4));
           return prev + target.slice(prev.length, prev.length + charsToAdd);
         }
         return prev;
@@ -63,6 +67,22 @@ export default function PdfTranslator() {
     return () => cancelAnimationFrame(rafId);
   }, []);
 
+  // 自适应动态监听左侧容器宽度，消除硬编码 800px 溢出
+  useEffect(() => {
+    if (!pdfWrapperRef.current) return;
+    const updateWidth = () => {
+      if (pdfWrapperRef.current) {
+        const containerW = pdfWrapperRef.current.clientWidth;
+        const calculatedWidth = Math.max(280, containerW - 48);
+        setPdfRenderWidth(calculatedWidth);
+      }
+    };
+    updateWidth();
+    const observer = new ResizeObserver(updateWidth);
+    observer.observe(pdfWrapperRef.current);
+    return () => observer.disconnect();
+  }, [leftPaneWidth, isImmersive]);
+
   // Load from DB on mount
   useEffect(() => {
     if (!activeFileId) return;
@@ -72,7 +92,6 @@ export default function PdfTranslator() {
         setFile(new File([record.pdfData], record.filename, { type: 'application/pdf' }));
         setTranslationCache(record.translations || {});
         
-        // Instantly display if current page is in the loaded cache
         if (record.translations && record.translations[pageNumber]) {
           fullTextRef.current = record.translations[pageNumber];
           setTranslatedText(record.translations[pageNumber]);
@@ -85,10 +104,16 @@ export default function PdfTranslator() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeFileId, router]);
 
-  // Handle page changes to instantly load cached text
+  // Handle page changes to instantly load cached text and abort ongoing requests
   useEffect(() => {
     currentPageRef.current = pageNumber;
     
+    // 中断上一次未完成的翻译流，杜绝竞态与 Token 浪费
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+
     if (translationCache[pageNumber]) {
       fullTextRef.current = translationCache[pageNumber];
       setTranslatedText(translationCache[pageNumber]);
@@ -104,7 +129,6 @@ export default function PdfTranslator() {
   // Persist translationCache to DB whenever it changes
   useEffect(() => {
     if (dbRecord && Object.keys(translationCache).length > 0) {
-      // Avoid unnecessary writes if nothing actually changed
       const updatedRecord = { ...dbRecord, translations: translationCache };
       setDbRecord(updatedRecord);
       saveHistoryRecord(updatedRecord).catch(e => console.error("Save history error", e));
@@ -121,6 +145,12 @@ export default function PdfTranslator() {
     if (!force && translationCache[pageNumber]) {
       return;
     }
+
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
 
     setIsTranslating(true);
     setError('');
@@ -153,7 +183,7 @@ export default function PdfTranslator() {
 
       if (!extractedText.trim()) {
         setIsTranslating(false);
-        const msg = '*(当前页面无文本)*';
+        const msg = '*(当前页面无提取到文本内容，若为扫描件请先进行 OCR 处理)*';
         setTranslatedText(msg);
         fullTextRef.current = msg;
         return;
@@ -171,21 +201,21 @@ export default function PdfTranslator() {
           provider: settings.provider,
           customPrompt: settings.customPrompt
         }),
+        signal: controller.signal,
       });
 
       if (!response.ok) {
         const errorText = await response.text().catch(() => 'Unknown error');
-        let errorMessage = 'Translation request failed';
+        let errorMessage = '翻译请求失败';
         try {
           const errorData = JSON.parse(errorText);
           errorMessage = errorData.error || errorMessage;
-        } catch (e) {
-          // If not JSON, show the status and start of text
-          errorMessage = `Status ${response.status}: ${errorText.slice(0, 100)}`;
+        } catch {
+          errorMessage = `HTTP ${response.status}: ${errorText.slice(0, 150)}`;
         }
         throw new Error(errorMessage);
       }
-      if (!response.body) throw new Error('ReadableStream not supported by the browser.');
+      if (!response.body) throw new Error('当前浏览器不支持 ReadableStream。');
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder('utf-8');
@@ -212,8 +242,12 @@ export default function PdfTranslator() {
       setTranslationCache(prev => ({ ...prev, [pageNumber]: finalCleanText }));
 
     } catch (err: any) {
+      if (err.name === 'AbortError') {
+        // 请求被主动中断，无需展示错误
+        return;
+      }
       console.error(err);
-      setError(err.message || 'An error occurred during translation.');
+      setError(err.message || '翻译过程中出现异常。');
     } finally {
       setIsTranslating(false);
     }
@@ -266,7 +300,7 @@ export default function PdfTranslator() {
         }),
       });
 
-      if (!response.ok || !response.body) throw new Error('Pre-translation request failed');
+      if (!response.ok || !response.body) throw new Error('预翻译请求失败');
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder('utf-8');
@@ -293,7 +327,7 @@ export default function PdfTranslator() {
       const timer = setTimeout(async () => {
         await translateCurrentPage();
         preTranslateNextPage();
-      }, 600); 
+      }, 500); 
       return () => clearTimeout(timer);
     }
   }, [file, pageNumber, autoTranslate, translateCurrentPage]);
@@ -307,9 +341,9 @@ export default function PdfTranslator() {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement).tagName)) return;
       
-      if (e.key === 'ArrowLeft') {
+      if (e.key === 'ArrowLeft' || e.key === 'PageUp' || e.key === '[') {
         changePage(-1);
-      } else if (e.key === 'ArrowRight') {
+      } else if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ']') {
         changePage(1);
       }
     };
@@ -324,7 +358,6 @@ export default function PdfTranslator() {
       if (!isResizing || !containerRef.current) return;
       
       const containerRect = containerRef.current.getBoundingClientRect();
-      // Calculate percentage, offset slightly for the gap
       const newLeftWidth = ((e.clientX - containerRect.left) / containerRect.width) * 100;
       
       if (newLeftWidth > 20 && newLeftWidth < 80) {
@@ -379,56 +412,81 @@ export default function PdfTranslator() {
       {!file && (
         <div className={styles.uploadOverlay}>
            <div className={styles.spinner} />
-           <p style={{marginTop: '16px', color: 'var(--primary)'}}>加载文档中...</p>
+           <p style={{marginTop: '16px', color: 'var(--primary)', fontWeight: 500}}>正在解构 PDF 文档...</p>
         </div>
       )}
 
       {/* Left Pane - PDF Viewer */}
       {!isImmersive && (
-        <div className={styles.leftPane} style={{ flexBasis: `calc(${leftPaneWidth}% - 8px)`, flexGrow: 0, flexShrink: 0 }}>
+        <div className={styles.leftPane} style={{ flexBasis: `calc(${leftPaneWidth}% - 6px)`, flexGrow: 0, flexShrink: 0 }}>
           <div className={styles.header}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-             <button className={styles.btnSecondary} onClick={() => router.push('/')}>← 返回主页</button>
-             <h2>原始 PDF {file && `(${file.name})`}</h2>
-          </div>
-          <div className={styles.controls}>
-            <button className={styles.btn} disabled={pageNumber <= 1} onClick={() => changePage(-1)}>
-              上一页
-            </button>
-            <input 
-              type="range" 
-              min={1} 
-              max={numPages || 1} 
-              value={pageNumber} 
-              onChange={(e) => setPageNumber(Number(e.target.value))} 
-              style={{ width: '100px', cursor: 'pointer' }}
-              title="快速拖动跳转页面"
-            />
-            <span style={{ fontSize: '14px', minWidth: '40px', textAlign: 'center' }}>
-              {pageNumber} / {numPages || '-'}
-            </span>
-            <button className={styles.btn} disabled={pageNumber >= numPages} onClick={() => changePage(1)}>
-              下一页
-            </button>
-          </div>
-        </div>
-        <div className={styles.pdfWrapper}>
-          {file && (
-            <Document
-              file={file}
-              onLoadSuccess={onDocumentLoadSuccess}
-              loading={<div className={styles.loadingOverlay}><div className={styles.spinner} /></div>}
-            >
-              <Page 
-                pageNumber={pageNumber} 
-                width={800} 
-                renderTextLayer={true}
-                renderAnnotationLayer={false}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <button className={styles.btnSecondary} onClick={() => router.push('/')} title="返回首页">
+                ← 首页
+              </button>
+              <h2>{file ? file.name : '原始 PDF'}</h2>
+            </div>
+            <div className={styles.controls}>
+              {/* Zoom controls */}
+              <button 
+                type="button" 
+                className={styles.btnSecondary} 
+                onClick={() => setZoomScale(s => Math.max(0.6, s - 0.15))}
+                title="缩小"
+              >
+                －
+              </button>
+              <span style={{ fontSize: '12px', color: 'var(--text-muted)', minWidth: '40px', textAlign: 'center' }}>
+                {Math.round(zoomScale * 100)}%
+              </span>
+              <button 
+                type="button" 
+                className={styles.btnSecondary} 
+                onClick={() => setZoomScale(s => Math.min(2.0, s + 0.15))}
+                title="放大"
+              >
+                ＋
+              </button>
+
+              {/* Page Controls */}
+              <button className={styles.btn} disabled={pageNumber <= 1} onClick={() => changePage(-1)}>
+                上一页
+              </button>
+              <input 
+                type="range" 
+                min={1} 
+                max={numPages || 1} 
+                value={pageNumber} 
+                onChange={(e) => setPageNumber(Number(e.target.value))} 
+                style={{ width: '80px', cursor: 'pointer' }}
+                title="快速拖拽翻页"
               />
-            </Document>
-          )}
+              <span className={styles.badge}>
+                {pageNumber} / {numPages || '-'}
+              </span>
+              <button className={styles.btn} disabled={pageNumber >= numPages} onClick={() => changePage(1)}>
+                下一页
+              </button>
+            </div>
+          </div>
+
+          <div className={styles.pdfWrapper} ref={pdfWrapperRef}>
+            {file && (
+              <Document
+                file={file}
+                onLoadSuccess={onDocumentLoadSuccess}
+                loading={<div className={styles.loadingOverlay}><div className={styles.spinner} /></div>}
+              >
+                <Page 
+                  pageNumber={pageNumber} 
+                  width={pdfRenderWidth * zoomScale} 
+                  renderTextLayer={true}
+                  renderAnnotationLayer={false}
+                />
+              </Document>
+            )}
+          </div>
         </div>
-      </div>
       )}
 
       {/* Resizer handle */}
@@ -436,6 +494,8 @@ export default function PdfTranslator() {
         <div 
           className={styles.resizer}
           onMouseDown={() => setIsResizing(true)}
+          onDoubleClick={() => setLeftPaneWidth(50)}
+          title="按住拖拽调整宽度，双击快速复位 50:50"
         />
       )}
 
@@ -443,15 +503,32 @@ export default function PdfTranslator() {
       <div 
         className={styles.rightPane} 
         style={{ 
-          flexBasis: isImmersive ? '100%' : `calc(${100 - leftPaneWidth}% - 8px)`,
+          flexBasis: isImmersive ? '100%' : `calc(${100 - leftPaneWidth}% - 6px)`,
           flexGrow: isImmersive ? 1 : 0, 
           flexShrink: 0 
         }}
       >
         <div className={styles.header}>
-          <h2>翻译结果 (中文)</h2>
+          <h2>
+            {isImmersive && (
+              <button className={styles.btnSecondary} onClick={() => router.push('/')} style={{ marginRight: '8px' }}>
+                ← 首页
+              </button>
+            )}
+            AI 译文 (中文)
+            {translationCache[pageNumber] && <span className={styles.badge} style={{ marginLeft: '6px' }}>已缓存</span>}
+          </h2>
           <div className={styles.controls}>
-            <label style={{ fontSize: '14px', display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', background: 'var(--primary)', color: 'white', padding: '6px 12px', borderRadius: '6px' }}>
+            <button 
+              type="button" 
+              className={styles.themeToggleBtn} 
+              onClick={toggleTheme}
+              title="切换主题"
+            >
+              {theme === 'dark' ? '☀️' : '🌙'}
+            </button>
+
+            <label style={{ fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', background: 'var(--primary-surface)', border: '1px solid var(--primary-border)', color: 'var(--primary)', padding: '6px 12px', borderRadius: '10px', fontWeight: 600 }}>
               <input 
                 type="checkbox" 
                 checked={isImmersive} 
@@ -460,28 +537,33 @@ export default function PdfTranslator() {
               />
               沉浸模式
             </label>
+            
             <button 
               className={styles.btnSecondary} 
               onClick={downloadMarkdown} 
               disabled={Object.keys(translationCache).length === 0}
+              title="导出已翻译的所有页码为 Markdown"
             >
-              ⬇ 导出 Markdown
+              ⬇ 导出 MD
             </button>
-            <label style={{ fontSize: '14px', display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}>
+            
+            <label style={{ fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', color: 'var(--text-muted)' }}>
               <input 
                 type="checkbox" 
                 checked={autoTranslate} 
                 onChange={(e) => setAutoTranslate(e.target.checked)} 
               />
-              跟随翻页自动翻译
+              翻页自动翻译
             </label>
+
             <button
-              className={styles.btn}
+              className={styles.btnSecondary}
               onClick={preTranslateNextPage}
               disabled={!file || pageNumber >= numPages || isPreTranslating || !!translationCache[pageNumber + 1]}
             >
-              {isPreTranslating ? '预翻译中...' : translationCache[pageNumber + 1] ? '下一页已就绪' : '预翻译下一页'}
+              {isPreTranslating ? '预加载中...' : translationCache[pageNumber + 1] ? '下页已就绪' : '预译下一页'}
             </button>
+            
             <button 
               className={styles.btn} 
               onClick={() => translateCurrentPage(true)} 
@@ -491,27 +573,31 @@ export default function PdfTranslator() {
             </button>
           </div>
         </div>
+
         <div className={styles.markdownWrapper}>
           {isTranslating && !displayedText ? (
             <div className={styles.loadingOverlay}>
               <div className={styles.spinner} />
-              <p>{fullTextRef.current.includes('<think>') ? 'AI 正在深度思考中...' : '正在连接 AI 引擎...'}</p>
+              <p>{fullTextRef.current.includes('<think>') ? 'AI 正在深度思考中...' : '正在连接 AI 引擎流式输出...'}</p>
             </div>
           ) : error ? (
-            <div style={{ color: 'red' }}>翻译失败: {error}</div>
+            <div style={{ color: 'var(--accent-rose)', padding: '16px', background: 'rgba(244, 63, 94, 0.1)', borderRadius: '12px', border: '1px solid rgba(244, 63, 94, 0.2)' }}>
+              翻译失败: {error}
+            </div>
           ) : (
             <div 
               style={{ 
-                maxWidth: isImmersive ? '800px' : 'none', 
+                maxWidth: isImmersive ? '760px' : 'none', 
                 margin: isImmersive ? '0 auto' : '0',
-                fontSize: isImmersive ? '18px' : '16px',
-                lineHeight: isImmersive ? '2' : '1.8',
+                fontSize: isImmersive ? '17px' : '15px',
+                lineHeight: isImmersive ? '2.0' : '1.85',
                 transition: 'all 0.3s ease'
               }}
             >
               <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                {displayedText ? displayedText + (isTranslating ? ' ▍' : '') : '待翻译或缓存中...'}
+                {displayedText ? displayedText : '待翻译或翻页中...'}
               </ReactMarkdown>
+              {isTranslating && <span className={styles.cursorPulse}> ▍</span>}
             </div>
           )}
         </div>
@@ -519,3 +605,4 @@ export default function PdfTranslator() {
     </div>
   );
 }
+
