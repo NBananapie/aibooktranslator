@@ -29,6 +29,9 @@ interface AppContextType {
   setSettings: (settings: AppSettings) => void;
   activeFileId: string | null;
   setActiveFileId: (id: string | null) => void;
+  theme: 'dark' | 'light';
+  setTheme: (theme: 'dark' | 'light') => void;
+  toggleTheme: () => void;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -36,18 +39,26 @@ const AppContext = createContext<AppContextType | undefined>(undefined);
 export function AppProvider({ children }: { children: ReactNode }) {
   const [settings, setSettingsState] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [activeFileId, setActiveFileId] = useState<string | null>(null);
+  const [theme, setThemeState] = useState<'dark' | 'light'>('dark');
   const [isLoaded, setIsLoaded] = useState(false);
 
   useEffect(() => {
     // Load settings from localStorage
-    const saved = localStorage.getItem('pdf_translator_settings');
-    if (saved) {
+    const savedSettings = localStorage.getItem('pdf_translator_settings');
+    if (savedSettings) {
       try {
-        setSettingsState({ ...DEFAULT_SETTINGS, ...JSON.parse(saved) });
+        setSettingsState({ ...DEFAULT_SETTINGS, ...JSON.parse(savedSettings) });
       } catch (e) {
         console.error('Failed to parse settings');
       }
     }
+
+    // Load theme from localStorage
+    const savedTheme = localStorage.getItem('app_theme') as 'dark' | 'light' | null;
+    const initialTheme = savedTheme === 'light' || savedTheme === 'dark' ? savedTheme : 'dark';
+    setThemeState(initialTheme);
+    document.documentElement.setAttribute('data-theme', initialTheme);
+
     setIsLoaded(true);
   }, []);
 
@@ -56,10 +67,29 @@ export function AppProvider({ children }: { children: ReactNode }) {
     localStorage.setItem('pdf_translator_settings', JSON.stringify(newSettings));
   };
 
+  const setTheme = (newTheme: 'dark' | 'light') => {
+    setThemeState(newTheme);
+    localStorage.setItem('app_theme', newTheme);
+    document.documentElement.setAttribute('data-theme', newTheme);
+  };
+
+  const toggleTheme = () => {
+    const nextTheme = theme === 'dark' ? 'light' : 'dark';
+    setTheme(nextTheme);
+  };
+
   if (!isLoaded) return null; // Prevent hydration mismatch
 
   return (
-    <AppContext.Provider value={{ settings, setSettings, activeFileId, setActiveFileId }}>
+    <AppContext.Provider value={{ 
+      settings, 
+      setSettings, 
+      activeFileId, 
+      setActiveFileId, 
+      theme, 
+      setTheme, 
+      toggleTheme 
+    }}>
       {children}
     </AppContext.Provider>
   );
