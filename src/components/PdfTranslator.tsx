@@ -168,6 +168,7 @@ export default function PdfTranslator() {
           apiKey: settings.apiKey,
           baseUrl: settings.baseUrl,
           model: settings.model,
+          provider: settings.provider,
           customPrompt: settings.customPrompt
         }),
       });
@@ -260,6 +261,7 @@ export default function PdfTranslator() {
           apiKey: settings.apiKey,
           baseUrl: settings.baseUrl,
           model: settings.model,
+          provider: settings.provider,
           customPrompt: settings.customPrompt
         }),
       });
