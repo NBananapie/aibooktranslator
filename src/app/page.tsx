@@ -6,10 +6,10 @@ import { useAppContext, AppSettings } from '@/context/AppContext';
 import { getAllHistoryMetadata, saveHistoryRecord, HistoryRecord, deleteHistoryRecord } from '@/lib/db';
 import styles from './page.module.css';
 
-const PROVIDER_PRESETS = [
-  { label: 'MiniMax', baseUrl: 'https://api.minimax.chat/v1', model: 'MiniMax-M2.7-highspeed' },
-  { label: 'Gemini（有免费额度）', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/', model: '' },
-  { label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', model: '' },
+const PROVIDER_PRESETS: { label: string; baseUrl: string; model: string; provider: 'openai' | 'gemini' | 'custom' }[] = [
+  { label: 'MiniMax', baseUrl: 'https://api.minimax.chat/v1', model: 'MiniMax-M2.7-highspeed', provider: 'openai' },
+  { label: 'Google Gemini (原生 3.7)', baseUrl: 'https://generativelanguage.googleapis.com', model: 'gemini-3.7-flash', provider: 'gemini' },
+  { label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', provider: 'openai' },
 ];
 
 const hintStyle: React.CSSProperties = { fontSize: '12px', color: '#6b6b70', marginTop: '4px', lineHeight: 1.5 };
@@ -170,18 +170,23 @@ export default function Home() {
                     key={preset.label}
                     type="button"
                     className={styles.btnSecondary}
-                    onClick={() => setFormSettings({ ...formSettings, baseUrl: preset.baseUrl, model: preset.model })}
+                    onClick={() => setFormSettings({
+                      ...formSettings,
+                      baseUrl: preset.baseUrl,
+                      model: preset.model,
+                      provider: preset.provider
+                    })}
                   >
                     {preset.label}
                   </button>
                 ))}
               </div>
               <p style={hintStyle}>
-                任何兼容 OpenAI Chat Completions 的服务都能用。没有 Key？可以先去{' '}
+                支持 MiniMax、OpenAI 兼容服务以及 Google Gemini 3.x 原生协议。没有 Key？可以先去{' '}
                 <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer">
                   Google AI Studio
                 </a>{' '}
-                免费领一个 Gemini Key，再回来选「Gemini」并填入模型名。
+                免费领一个 Gemini Key（支持 AQ. 开头的新版 Auth Key），再回来点击「Google Gemini」即可。
               </p>
             </div>
             <div className={styles.formGroup}>

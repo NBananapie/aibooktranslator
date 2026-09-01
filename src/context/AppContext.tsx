@@ -6,6 +6,7 @@ export interface AppSettings {
   apiKey: string;
   baseUrl: string;
   model: string;
+  provider?: 'openai' | 'gemini' | 'custom';
   customPrompt: string;
 }
 
@@ -13,6 +14,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   apiKey: '',
   baseUrl: 'https://api.minimax.chat/v1',
   model: 'MiniMax-M2.7-highspeed',
+  provider: 'openai',
   customPrompt: `You are a professional translator. Translate the following text into 中文. 
           
 IMPORTANT RULES:
