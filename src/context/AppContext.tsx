@@ -21,7 +21,9 @@ IMPORTANT RULES:
 1. Translate with the principle of "信达雅" (Faithful, Expressive, Elegant). Ensure the Chinese translation reads naturally, beautifully, and professionally to a native speaker.
 2. Accurately convey the original author's underlying meaning, tone, and metaphors. Do not just translate literally; capture the essence.
 3. Preserve the EXACT original formatting, paragraph structure, and line breaks. If there are headings, lists, or code blocks, keep them in Markdown format.
-4. Output ONLY the translated text in Markdown. Do NOT include any conversational filler.`
+4. HIGHLIGHT CALLOUTS & EXERCISES:
+   - When encountering practical exercises, action items, key takeaways, tips, warnings, or case studies (e.g. text starting with "Exercise:", "• Exercise:", "Takeaway:", "Note:", "Action Item:"), ALWAYS format them as Markdown blockquotes starting with \`> 练习: \` or \`> 核心要点: \` or \`> 提示: \` to ensure consistent, beautiful card formatting.
+5. Output ONLY the translated text in Markdown. Do NOT include any conversational filler.`
 };
 
 interface AppContextType {

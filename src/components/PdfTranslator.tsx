@@ -602,6 +602,14 @@ export default function PdfTranslator() {
           )}
         </div>
       </div>
+
+      {/* Immersive Mode Keyboard Navigation Hint */}
+      {isImmersive && (
+        <div className={styles.immersiveHint}>
+          <span>按键盘 <span className={styles.keyBadge}>←</span> <span className={styles.keyBadge}>→</span> 翻页</span>
+          <span className={styles.badge}>{pageNumber} / {numPages || '-'}</span>
+        </div>
+      )}
     </div>
   );
 }
