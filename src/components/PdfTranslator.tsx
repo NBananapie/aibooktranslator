@@ -17,6 +17,74 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   import.meta.url,
 ).toString();
 
+function extractPdfTextWithHierarchy(items: any[]): string {
+  if (!items || items.length === 0) return '';
+  
+  // 1. 统计正文基准字号 (Dominant body font size)
+  const fontSizes: number[] = [];
+  for (const item of items) {
+    if (item.str && item.str.trim()) {
+      const size = Math.round(Math.abs(item.transform[3]) || item.height || 10);
+      if (size > 0) fontSizes.push(size);
+    }
+  }
+
+  const sizeCounts: Record<number, number> = {};
+  let bodyFontSize = 10;
+  let maxCount = 0;
+  for (const size of fontSizes) {
+    sizeCounts[size] = (sizeCounts[size] || 0) + 1;
+    if (sizeCounts[size] > maxCount) {
+      maxCount = sizeCounts[size];
+      bodyFontSize = size;
+    }
+  }
+
+  // 2. 基于字号与排版坐标进行层级识别
+  let extracted = '';
+  let lastY: number | undefined;
+  let inHeading = false;
+
+  for (const item of items) {
+    if (!item.str && !item.hasEOL) continue;
+    const str = item.str || '';
+    const fontSize = Math.round(Math.abs(item.transform[3]) || item.height || bodyFontSize);
+    const currentY = item.transform[5];
+    const isHeadingFont = fontSize >= bodyFontSize * 1.2 && fontSize > bodyFontSize + 1.5;
+
+    if (lastY !== undefined) {
+      const yDiff = Math.abs(lastY - currentY);
+      if (yDiff > 13 || isHeadingFont || inHeading) {
+        extracted += '\n\n';
+        inHeading = false;
+      } else if (yDiff > 4) {
+        extracted += '\n';
+      }
+    }
+
+    // 若当前行为大字号标题行，自动补充 Markdown 二级标题标记
+    if (isHeadingFont && str.trim().length > 0 && !inHeading) {
+      if (!extracted.endsWith('\n\n') && extracted.length > 0) {
+        extracted += '\n\n';
+      }
+      extracted += '## ';
+      inHeading = true;
+    }
+
+    extracted += str;
+    if (item.hasEOL) {
+      extracted += '\n';
+      inHeading = false;
+    }
+
+    if (str.trim() !== '') {
+      lastY = currentY;
+    }
+  }
+
+  return extracted.replace(/\n{3,}/g, '\n\n').trim();
+}
+
 export default function PdfTranslator() {
   const { settings, activeFileId, theme, toggleTheme } = useAppContext();
   const router = useRouter();
@@ -164,22 +232,7 @@ export default function PdfTranslator() {
       const page = await pdf.getPage(pageNumber);
       const textContent = await page.getTextContent();
       
-      let extractedText = '';
-      let lastY: number | undefined;
-      
-      for (const item of textContent.items as any[]) {
-        if (!item.str && !item.hasEOL) continue;
-        if (lastY !== undefined) {
-          const yDiff = Math.abs(lastY - item.transform[5]);
-          if (yDiff > 12) extractedText += '\n\n';
-          else if (yDiff > 4) extractedText += '\n';
-        }
-        extractedText += item.str;
-        if (item.hasEOL) extractedText += '\n';
-        if (item.str.trim() !== '') lastY = item.transform[5];
-      }
-
-      extractedText = extractedText.replace(/\n{3,}/g, '\n\n');
+      const extractedText = extractPdfTextWithHierarchy(textContent.items as any[]);
 
       if (!extractedText.trim()) {
         setIsTranslating(false);
@@ -266,20 +319,7 @@ export default function PdfTranslator() {
       const page = await pdf.getPage(nextPage);
       const textContent = await page.getTextContent();
       
-      let extractedText = '';
-      let lastY: number | undefined;
-      for (const item of textContent.items as any[]) {
-        if (!item.str && !item.hasEOL) continue;
-        if (lastY !== undefined) {
-          const yDiff = Math.abs(lastY - item.transform[5]);
-          if (yDiff > 12) extractedText += '\n\n';
-          else if (yDiff > 4) extractedText += '\n';
-        }
-        extractedText += item.str;
-        if (item.hasEOL) extractedText += '\n';
-        if (item.str.trim() !== '') lastY = item.transform[5];
-      }
-      extractedText = extractedText.replace(/\n{3,}/g, '\n\n');
+      const extractedText = extractPdfTextWithHierarchy(textContent.items as any[]);
 
       if (!extractedText.trim()) {
         setTranslationCache(prev => ({ ...prev, [nextPage]: '*(下一页无文本)*' }));
