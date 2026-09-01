@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { useAppContext, AppSettings } from '@/context/AppContext';
+import { useAppContext, AppSettings, DEFAULT_SETTINGS } from '@/context/AppContext';
 import { getAllHistoryMetadata, saveHistoryRecord, HistoryRecord, deleteHistoryRecord } from '@/lib/db';
 import styles from './page.module.css';
 
@@ -247,7 +247,18 @@ export default function Home() {
               />
             </div>
             <div className={styles.formGroup}>
-              <label>系统翻译提示词 (System Prompt)</label>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <label>系统翻译提示词 (System Prompt)</label>
+                <button 
+                  type="button" 
+                  className={styles.btnSecondary} 
+                  style={{ padding: '3px 8px', fontSize: '11px' }}
+                  onClick={() => setFormSettings({...formSettings, customPrompt: DEFAULT_SETTINGS.customPrompt})}
+                  title="重置为推荐出版级排版提示词"
+                >
+                  ↺ 恢复推荐提示词
+                </button>
+              </div>
               <textarea 
                 rows={6}
                 value={formSettings.customPrompt} 
