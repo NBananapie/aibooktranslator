@@ -289,13 +289,7 @@ export async function POST(req: Request) {
 
     if (isGemini) {
       const baseUrl = clientBaseUrl || 'https://generativelanguage.googleapis.com';
-      let model = (clientModel && clientModel.trim()) || 'gemini-2.5-flash';
-      // 容错与别名映射：自动校正可能误填的模型名
-      if (model === 'gemini-3.5-flash-lite' || model === 'gemini-3.7-flash-lite' || model === 'gemini-3.5-flash') {
-        model = 'gemini-2.5-flash';
-      } else if (model.includes('3.5')) {
-        model = model.replace('3.5', '2.5');
-      }
+      const model = (clientModel && clientModel.trim()) || 'gemini-3.5-flash-lite';
       return await handleGeminiStream({
         apiKey,
         baseUrl,
