@@ -890,11 +890,6 @@ export default function PdfTranslator() {
         behavior: 'smooth',
       });
     }
-
-    // 4.5 秒后自动淡出高亮
-    highlightTimerRef.current = setTimeout(() => {
-      setExactHighlightSpans([]);
-    }, 4500);
   };
 
   // 划词选区监听与悬浮微岛工具栏
@@ -925,7 +920,7 @@ export default function PdfTranslator() {
       clipId: existingClip?.id,
     });
 
-    // 触发语义级精准高亮
+    // 触发语义级精准高亮 (松手常驻高亮，不自动淡出)
     triggerExactHighlightForSelection(text);
   };
 
@@ -943,6 +938,9 @@ export default function PdfTranslator() {
       const selection = window.getSelection();
       if (!selection || selection.isCollapsed) {
         setFloatingToolbar(null);
+        if (!target.closest(`.${styles.markdownWrapper}`)) {
+          setExactHighlightSpans([]);
+        }
       }
     };
 
@@ -1377,6 +1375,9 @@ export default function PdfTranslator() {
                     width={pdfRenderWidth * zoomScale} 
                     renderTextLayer={true}
                     renderAnnotationLayer={false}
+                    loading={null}
+                    noData={null}
+                    canvasBackground="transparent"
                   />
                   {/* 语义级精准词对词行内划词荧光高亮 */}
                   {exactHighlightSpans.map((rect, idx) => (

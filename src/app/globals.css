@@ -182,9 +182,18 @@ a:hover {
 
 .react-pdf__Page {
   position: relative !important;
+  background-color: transparent !important;
 }
 
-/* === 全局现代毛玻璃微光 Tooltip (彻底淘汰浏览器粗黑框) === */
+.react-pdf__Page__canvas {
+  display: block !important;
+  margin: 0 auto !important;
+  background-color: transparent !important;
+  transition: opacity 0.2s cubic-bezier(0.16, 1, 0.3, 1) !important;
+  border-radius: 4px;
+}
+
+/* === 全局现代毛玻璃微光 Tooltip (超高层级防遮挡、智能下方悬浮) === */
 [data-tooltip] {
   position: relative;
 }
@@ -192,27 +201,27 @@ a:hover {
 [data-tooltip]::before {
   content: '';
   position: absolute;
-  bottom: -6px;
+  top: calc(100% + 2px);
   left: 50%;
   transform: translateX(-50%) scale(0);
   border: 5px solid transparent;
-  border-bottom-color: rgba(24, 24, 30, 0.95);
+  border-bottom-color: rgba(20, 20, 28, 0.98);
   pointer-events: none;
   opacity: 0;
   transition: all 0.15s cubic-bezier(0.16, 1, 0.3, 1);
-  z-index: 10001;
+  z-index: 99999;
 }
 
 [data-tooltip]::after {
   content: attr(data-tooltip);
   position: absolute;
-  bottom: -32px;
+  top: calc(100% + 7px);
   left: 50%;
   transform: translateX(-50%) translateY(-3px);
   padding: 5px 10px;
   border-radius: 7px;
-  background: rgba(20, 20, 28, 0.96);
-  border: 1px solid rgba(245, 158, 11, 0.3);
+  background: rgba(18, 18, 24, 0.98);
+  border: 1px solid rgba(245, 158, 11, 0.35);
   color: #f8fafc;
   font-size: 11.5px;
   font-weight: 500;
@@ -221,11 +230,11 @@ a:hover {
   pointer-events: none;
   opacity: 0;
   visibility: hidden;
-  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.55), 0 0 14px var(--primary-glow);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.65), 0 0 14px var(--primary-glow);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
   transition: all 0.15s cubic-bezier(0.16, 1, 0.3, 1);
-  z-index: 10000;
+  z-index: 99998;
 }
 
 [data-tooltip]:hover::before,

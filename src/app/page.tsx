@@ -485,7 +485,7 @@ export default function Home() {
                     apiUrl: e.target.value
                   }
                 })}
-                placeholder="https://aistudio.baidu.com/serving/api/v1/model/predict"
+                placeholder="https://paddleocr.aistudio-app.com/api/v2/ocr/jobs"
               />
             </div>
 

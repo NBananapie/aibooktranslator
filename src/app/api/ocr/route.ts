@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 
-export const runtime = 'edge';
+export const runtime = 'nodejs';
 
 // 递归提取百度飞桨 OCR / Layout 分析结果中的 Markdown / 结构化文本
 function extractTextFromPaddleResult(result: any): string {
@@ -38,12 +38,33 @@ function extractTextFromPaddleResult(result: any): string {
     }
   }
 
-  // 2. PP-OCR 通用识别：ocrResults / words_result / prism_wordsInfo
+  // 2. PP-OCR 通用识别：ocrResults / pages / rec_texts
   if (Array.isArray(result.ocrResults)) {
-    return result
-      .map((r: any) => (typeof r === 'string' ? r : r.words || r.text || ''))
-      .filter(Boolean)
-      .join('\n');
+    const lines: string[] = [];
+    for (const r of result.ocrResults) {
+      if (typeof r === 'string') {
+        lines.push(r);
+      } else if (r.prunedResult?.rec_texts && Array.isArray(r.prunedResult.rec_texts)) {
+        lines.push(...r.prunedResult.rec_texts.filter(Boolean));
+      } else if (r.words || r.text) {
+        lines.push(r.words || r.text);
+      }
+    }
+    if (lines.length > 0) {
+      return lines.join('\n');
+    }
+  }
+
+  if (Array.isArray(result.pages)) {
+    const lines: string[] = [];
+    for (const page of result.pages) {
+      if (page.pruned_result?.rec_texts && Array.isArray(page.pruned_result.rec_texts)) {
+        lines.push(...page.pruned_result.rec_texts.filter(Boolean));
+      }
+    }
+    if (lines.length > 0) {
+      return lines.join('\n');
+    }
   }
 
   if (Array.isArray(result.words_result)) {
@@ -79,6 +100,10 @@ function extractTextFromPaddleResult(result: any): string {
       texts.push(obj.markdown);
       return;
     }
+    if (obj.rec_texts && Array.isArray(obj.rec_texts)) {
+      texts.push(...obj.rec_texts.filter(Boolean));
+      return;
+    }
     if (obj.words && typeof obj.words === 'string') {
       texts.push(obj.words);
     }
@@ -97,6 +122,118 @@ function extractTextFromPaddleResult(result: any): string {
   traverse(result);
 
   return texts.filter(Boolean).join('\n').trim();
+}
+
+// 异步提交并轮询百度飞桨 AIStudio PaddleOCR 作业
+async function runPaddleOcrJob(
+  token: string,
+  modelName: string,
+  imageBuffer: Buffer,
+  apiUrl?: string
+): Promise<{ text: string; raw: any }> {
+  const baseBaseUrl = apiUrl && apiUrl.includes('/api/v2/ocr/jobs')
+    ? apiUrl
+    : 'https://paddleocr.aistudio-app.com/api/v2/ocr/jobs';
+
+  const candidateModels = [modelName, 'PP-OCRv6', 'PP-StructureV3'];
+  let lastErrorMsg = '';
+
+  for (const currentModel of candidateModels) {
+    try {
+      const formData = new FormData();
+      formData.append('model', currentModel);
+      formData.append('optionalPayload', JSON.stringify({}));
+      
+      const blob = new Blob([new Uint8Array(imageBuffer)], { type: 'image/png' });
+      formData.append('file', blob, 'page_screenshot.png');
+
+      const submitRes = await fetch(baseBaseUrl, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+        body: formData,
+      });
+
+      const submitData = await submitRes.json().catch(() => null);
+
+      if (!submitRes.ok || !submitData) {
+        lastErrorMsg = submitData?.msg || submitData?.message || `提交失败 (${submitRes.status})`;
+        // 如果是队列满，尝试下一个候选模型
+        if (submitData?.code === 10010) {
+          continue;
+        }
+        throw new Error(lastErrorMsg);
+      }
+
+      if (submitData.code !== 0 && submitData.code !== undefined) {
+        lastErrorMsg = submitData.msg || `作业错误 (${submitData.code})`;
+        if (submitData.code === 10010) {
+          continue;
+        }
+        throw new Error(lastErrorMsg);
+      }
+
+      const jobId = submitData.data?.jobId || submitData.jobId || submitData.data?.id;
+      if (!jobId) {
+        throw new Error('未获取到百度飞桨 OCR 任务 ID');
+      }
+
+      // 轮询等待任务完成 (最多轮询 25 次，约 30 秒)
+      for (let i = 0; i < 25; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 1200));
+
+        const pollRes = await fetch(`${baseBaseUrl}/${jobId}`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
+
+        if (!pollRes.ok) continue;
+
+        const pollData = await pollRes.json().catch(() => null);
+        if (!pollData || pollData.code !== 0) continue;
+
+        const state = pollData.data?.state || pollData.state;
+
+        if (state === 'done' || state === 'success' || state === 'SUCCESS') {
+          const resultUrl = pollData.data?.resultUrl || pollData.resultUrl;
+          if (resultUrl?.jsonUrl) {
+            const jsonRes = await fetch(resultUrl.jsonUrl);
+            if (jsonRes.ok) {
+              const resultJson = await jsonRes.json();
+              const extracted = extractTextFromPaddleResult(resultJson.result || resultJson);
+              return { text: extracted, raw: resultJson };
+            }
+          }
+          if (resultUrl?.markdownUrl) {
+            const mdRes = await fetch(resultUrl.markdownUrl);
+            if (mdRes.ok) {
+              const mdText = await mdRes.text();
+              return { text: mdText, raw: pollData };
+            }
+          }
+
+          const extracted = extractTextFromPaddleResult(pollData.data || pollData);
+          return { text: extracted, raw: pollData };
+        }
+
+        if (state === 'failed' || state === 'FAILED' || state === 'error') {
+          const errMsg = pollData.data?.errorMsg || pollData.errorMsg || '识别失败';
+          throw new Error(`飞桨识别任务失败: ${errMsg}`);
+        }
+      }
+
+      throw new Error('OCR 识别任务超时，请重试');
+    } catch (err: any) {
+      lastErrorMsg = err.message || String(err);
+      if (currentModel === candidateModels[candidateModels.length - 1]) {
+        throw new Error(lastErrorMsg);
+      }
+    }
+  }
+
+  throw new Error(lastErrorMsg || 'OCR 识别遇到异常');
 }
 
 export async function POST(req: Request) {
@@ -124,75 +261,29 @@ export async function POST(req: Request) {
       );
     }
 
-    // 清洗 Base64 编码，去掉开头的 data:image/...;base64,
+    // 清洗 Base64 编码，转换为 Buffer
     let cleanBase64 = image;
     if (cleanBase64.includes('base64,')) {
       cleanBase64 = cleanBase64.split('base64,')[1];
     }
     cleanBase64 = cleanBase64.replace(/[\r\n\s]/g, '');
+    const imageBuffer = Buffer.from(cleanBase64, 'base64');
 
-    // 默认请求目标地址（用户自定义 URL 优先）
-    const targetUrl =
-      apiUrl?.trim() || 'https://aistudio.baidu.com/serving/api/v1/model/predict';
+    const result = await runPaddleOcrJob(token, model, imageBuffer, apiUrl);
 
-    // 组装百度飞桨 AI Studio API 请求
-    const requestHeaders: Record<string, string> = {
-      'Content-Type': 'application/json',
-      Authorization: token.startsWith('token ') ? token : `token ${token}`,
-    };
-
-    const requestPayload = {
-      file: cleanBase64,
-      fileType: 1, // 1 表示图片格式
-      model: model,
-    };
-
-    const response = await fetch(targetUrl, {
-      method: 'POST',
-      headers: requestHeaders,
-      body: JSON.stringify(requestPayload),
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      let errorMsg = `百度飞桨 OCR 接口请求失败 (${response.status})`;
-      try {
-        const errorJson = JSON.parse(errorText);
-        if (errorJson.errorMsg || errorJson.error_msg) {
-          errorMsg = `百度飞桨错误: ${errorJson.errorMsg || errorJson.error_msg}`;
-        } else if (errorJson.error?.message) {
-          errorMsg = `百度飞桨错误: ${errorJson.error.message}`;
-        }
-      } catch {
-        errorMsg = `百度飞桨错误 (${response.status}): ${errorText.slice(0, 200)}`;
-      }
-      return NextResponse.json({ error: errorMsg, details: errorText }, { status: response.status });
-    }
-
-    const responseData = await response.json();
-
-    if (responseData.errorCode !== undefined && responseData.errorCode !== 0) {
-      return NextResponse.json(
-        { error: `百度飞桨识别失败 (${responseData.errorCode}): ${responseData.errorMsg || '未知错误'}` },
-        { status: 400 }
-      );
-    }
-
-    const extractedText = extractTextFromPaddleResult(responseData.result || responseData);
-
-    if (!extractedText.trim()) {
+    if (!result.text.trim()) {
       return NextResponse.json({
         text: '',
         markdown: '',
-        raw: responseData,
+        raw: result.raw,
         message: 'OCR 接口未识别到有效文字内容',
       });
     }
 
     return NextResponse.json({
-      text: extractedText,
-      markdown: extractedText,
-      raw: responseData,
+      text: result.text,
+      markdown: result.text,
+      raw: result.raw,
     });
   } catch (error: any) {
     console.error('OCR Route Error:', error);
