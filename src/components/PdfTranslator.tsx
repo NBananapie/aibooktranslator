@@ -102,6 +102,7 @@ export default function PdfTranslator() {
   const [file, setFile] = useState<File | null>(null);
   const [numPages, setNumPages] = useState<number>(0);
   const [pageNumber, setPageNumber] = useState<number>(1);
+  const [pageAnimKey, setPageAnimKey] = useState<number>(1);
   
   // Title editing state
   const [isEditingTitle, setIsEditingTitle] = useState<boolean>(false);
@@ -121,10 +122,23 @@ export default function PdfTranslator() {
   const [ocrCache, setOcrCache] = useState<Record<number, string>>({});
   const [viewMode, setViewMode] = useState<'translation' | 'ocr_source'>('translation');
 
+  // PDF Text Items 缓存（用于精准词对词高亮坐标定位）
+  const [pdfTextItems, setPdfTextItems] = useState<any[]>([]);
+  const [pdfOriginalView, setPdfOriginalView] = useState<number[]>([0, 0, 600, 800]);
+
+  // 精准行内划词高亮条状态 (Exact highlight rectangles)
+  const [exactHighlightSpans, setExactHighlightSpans] = useState<Array<{
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+  }>>([]);
+  const highlightTimerRef = useRef<NodeJS.Timeout | null>(null);
+
   // Clips state (剪藏系统)
   const [clips, setClips] = useState<ClipItem[]>([]);
   const [isClipsDrawerOpen, setIsClipsDrawerOpen] = useState<boolean>(false);
-  const clipsBtnRef = useRef<HTMLButtonElement>(null);
+  const toggleBtnRef = useRef<HTMLButtonElement>(null);
   const [ghostFlyStyle, setGhostFlyStyle] = useState<React.CSSProperties | null>(null);
   const [ghostFlyText, setGhostFlyText] = useState<string>('');
 
@@ -135,15 +149,6 @@ export default function PdfTranslator() {
     left: number;
     text: string;
   } | null>(null);
-
-  // Left PDF Highlight Overlay (原文联动高亮)
-  const [pdfHighlightBox, setPdfHighlightBox] = useState<{
-    top: number;
-    left: number;
-    width: number;
-    height: number;
-  } | null>(null);
-  const highlightTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   // AI Explain Modal state (深度解释与追问)
   const [isExplainModalOpen, setIsExplainModalOpen] = useState<boolean>(false);
@@ -171,9 +176,7 @@ export default function PdfTranslator() {
     let rafId: number;
     const tick = () => {
       setDisplayedText((prev) => {
-        // Strip out reasoning blocks <think>...</think> from the stream
         const target = fullTextRef.current.replace(/<think>[\s\S]*?(<\/think>|$)/g, '').trimStart();
-        
         if (prev.length < target.length) {
           const diff = target.length - prev.length;
           const charsToAdd = Math.max(1, Math.ceil(diff / 4));
@@ -216,6 +219,7 @@ export default function PdfTranslator() {
         
         const initialPage = record.lastReadPage && record.lastReadPage >= 1 ? record.lastReadPage : 1;
         setPageNumber(initialPage);
+        setPageAnimKey(initialPage);
 
         if (record.translations && record.translations[initialPage]) {
           fullTextRef.current = record.translations[initialPage];
@@ -223,7 +227,6 @@ export default function PdfTranslator() {
           setDisplayedText(record.translations[initialPage]);
         }
 
-        // 更新上次阅读时间与页码
         updateHistoryProgress(activeFileId, {
           lastReadPage: initialPage,
           lastReadTime: Date.now()
@@ -235,14 +238,39 @@ export default function PdfTranslator() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeFileId, router]);
 
-  // Handle page changes to instantly load cached text and update progress in DB
+  // 提取当前页的 PDF TextItems 与原始尺寸
+  useEffect(() => {
+    if (!file || pageNumber < 1) return;
+    let isCancelled = false;
+
+    (async () => {
+      try {
+        const arrayBuffer = await file.arrayBuffer();
+        const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
+        const page = await pdf.getPage(pageNumber);
+        const textContent = await page.getTextContent();
+        if (!isCancelled) {
+          setPdfTextItems(textContent.items || []);
+          setPdfOriginalView(page.view || [0, 0, 600, 800]);
+        }
+      } catch (e) {
+        console.error('Error fetching page text content for exact highlights', e);
+      }
+    })();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [file, pageNumber]);
+
+  // Handle page changes to load cached text and update progress in DB
   useEffect(() => {
     currentPageRef.current = pageNumber;
     setViewMode('translation');
     setFloatingToolbar(null);
-    setPdfHighlightBox(null);
+    setExactHighlightSpans([]);
+    setPageAnimKey(Date.now()); // 触发平滑过渡动效
     
-    // 中断上一次未完成的翻译流，杜绝竞态与 Token 浪费
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
@@ -267,7 +295,7 @@ export default function PdfTranslator() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pageNumber, activeFileId]);
 
-  // Persist translationCache to DB whenever it changes
+  // Persist translationCache to DB
   useEffect(() => {
     if (dbRecord && Object.keys(translationCache).length > 0) {
       const updatedRecord = { ...dbRecord, translations: translationCache };
@@ -287,7 +315,6 @@ export default function PdfTranslator() {
     }
   };
 
-  // 保存修改后的文件名
   const handleSaveTitle = async () => {
     if (!editTitleValue.trim() || !activeFileId || !dbRecord) {
       setIsEditingTitle(false);
@@ -304,13 +331,12 @@ export default function PdfTranslator() {
     setIsEditingTitle(false);
   };
 
-  // 截取当前 PDF 页面为高分辨率 Base64 图像
   const captureCurrentPageImage = async (): Promise<string> => {
     if (!file) throw new Error('PDF 文件未加载');
     const arrayBuffer = await file.arrayBuffer();
     const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
     const page = await pdf.getPage(pageNumber);
-    const viewport = page.getViewport({ scale: 2.0 }); // 2x 提高清晰度确保 OCR 精度
+    const viewport = page.getViewport({ scale: 2.0 });
     const canvas = document.createElement('canvas');
     canvas.width = viewport.width;
     canvas.height = viewport.height;
@@ -320,7 +346,6 @@ export default function PdfTranslator() {
     return canvas.toDataURL('image/jpeg', 0.95);
   };
 
-  // 执行通用流式翻译
   const executeTranslateText = async (sourceText: string, targetPage: number) => {
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
@@ -395,7 +420,6 @@ export default function PdfTranslator() {
     }
   };
 
-  // 单独触发 OCR 识别
   const runOcrOnCurrentPage = async (autoTranslateAfter = false) => {
     if (!file || isOcrLoading) return;
     const token = settings.ocr?.apiToken?.trim();
@@ -447,10 +471,7 @@ export default function PdfTranslator() {
 
   const translateCurrentPage = useCallback(async (force = false) => {
     if (!file) return;
-
-    if (!force && translationCache[pageNumber]) {
-      return;
-    }
+    if (!force && translationCache[pageNumber]) return;
 
     setViewMode('translation');
     setIsTranslating(true);
@@ -468,7 +489,6 @@ export default function PdfTranslator() {
       const extractedText = extractPdfTextWithHierarchy(textContent.items as any[]);
 
       if (!extractedText.trim()) {
-        // 若原生提取无文字（扫描件），检查是否有 OCR Token 自动启用 OCR 识别
         const token = settings.ocr?.apiToken?.trim();
         if (token) {
           setIsTranslating(false);
@@ -497,7 +517,6 @@ export default function PdfTranslator() {
   const preTranslateNextPage = async () => {
     if (!file || pageNumber >= numPages) return;
     const nextPage = pageNumber + 1;
-    
     if (translationCache[nextPage]) return;
 
     setIsPreTranslating(true);
@@ -510,7 +529,6 @@ export default function PdfTranslator() {
       let extractedText = extractPdfTextWithHierarchy(textContent.items as any[]);
 
       if (!extractedText.trim() && settings.ocr?.apiToken?.trim()) {
-        // 下一页为扫描件时通过 OCR 预提取
         const viewport = page.getViewport({ scale: 2.0 });
         const canvas = document.createElement('canvas');
         canvas.width = viewport.width;
@@ -636,9 +654,9 @@ export default function PdfTranslator() {
     };
   }, [isResizing]);
 
-  // === 需求4: 右侧选中译文时在左侧 PDF 原文联动显示高亮遮罩 ===
-  const triggerPdfHighlightForSelection = (selectedText: string) => {
-    if (!selectedText.trim() || !pdfWrapperRef.current) return;
+  // === 需求1: 精准词对词行内划词高亮 (Exact Highlight Spans) ===
+  const triggerExactHighlightForSelection = (selectedText: string) => {
+    if (!selectedText.trim() || !pdfWrapperRef.current || pdfTextItems.length === 0) return;
 
     if (highlightTimerRef.current) {
       clearTimeout(highlightTimerRef.current);
@@ -647,42 +665,76 @@ export default function PdfTranslator() {
     const currentDocText = displayedText || translationCache[pageNumber] || '';
     if (!currentDocText) return;
 
-    const index = currentDocText.indexOf(selectedText);
-    const totalLen = Math.max(1, currentDocText.length);
-    const ratio = index >= 0 ? index / totalLen : 0.2;
-    const lenRatio = Math.max(0.08, selectedText.length / totalLen);
+    const origWidth = pdfOriginalView[2] || 600;
+    const origHeight = pdfOriginalView[3] || 800;
+    const currentRenderW = pdfRenderWidth * zoomScale;
+    const scale = currentRenderW / origWidth;
 
-    // 计算 PDF 容器内部大概相对位置
-    const pdfPageElem = pdfWrapperRef.current.querySelector('.react-pdf__Page') as HTMLElement;
-    if (pdfPageElem) {
-      const pageHeight = pdfPageElem.clientHeight || 800;
-      const pageWidth = pdfPageElem.clientWidth || (pdfRenderWidth * zoomScale);
-      
-      const topPos = Math.max(10, Math.min(pageHeight - 60, ratio * pageHeight + 20));
-      const boxHeight = Math.max(36, Math.min(180, lenRatio * pageHeight * 1.5));
-      const boxWidth = Math.max(200, pageWidth - 48);
+    // 筛选有效文本 items
+    const validItems = pdfTextItems.filter(item => item.str && item.str.trim() && item.transform);
+    if (validItems.length === 0) return;
 
-      setPdfHighlightBox({
-        top: topPos,
-        left: 24,
-        width: boxWidth,
-        height: boxHeight,
-      });
+    let matchedItems: any[] = [];
 
-      // 平滑滚动左侧 PDF 视口至对应区域
+    // 检查是否包含英文字符直接匹配
+    const cleanQuery = selectedText.trim().toLowerCase();
+    const directMatches = validItems.filter(item => {
+      const itemStr = (item.str || '').toLowerCase();
+      return cleanQuery.includes(itemStr) || itemStr.includes(cleanQuery);
+    });
+
+    if (directMatches.length > 0 && cleanQuery.length > 2 && /[a-zA-Z]/.test(cleanQuery)) {
+      matchedItems = directMatches;
+    } else {
+      // 中文段落映射：根据选中文本在全文译文中的起止比例映射到 items
+      const index = currentDocText.indexOf(selectedText);
+      const totalLen = Math.max(1, currentDocText.length);
+      const startRatio = index >= 0 ? index / totalLen : 0.1;
+      const endRatio = index >= 0 ? (index + selectedText.length) / totalLen : startRatio + 0.1;
+
+      const startIndex = Math.max(0, Math.floor(startRatio * validItems.length));
+      const endIndex = Math.min(validItems.length, Math.max(startIndex + 1, Math.ceil(endRatio * validItems.length)));
+
+      matchedItems = validItems.slice(startIndex, endIndex);
+    }
+
+    if (matchedItems.length === 0) {
+      matchedItems = validItems.slice(0, Math.min(5, validItems.length));
+    }
+
+    // 将匹配的 items 转换为精准屏幕视口矩形
+    const spans = matchedItems.map(item => {
+      const x = item.transform[4];
+      const y = item.transform[5];
+      const w = item.width || (item.str.length * 7);
+      const h = Math.abs(item.transform[3]) || item.height || 10;
+
+      const left = x * scale;
+      const top = (origHeight - y - h) * scale;
+      const width = w * scale;
+      const height = h * 1.18 * scale;
+
+      return { left, top, width, height };
+    });
+
+    setExactHighlightSpans(spans);
+
+    // 平滑滚动至第一个高亮词所在视口
+    if (spans.length > 0) {
+      const firstSpanTop = spans[0].top;
       pdfWrapperRef.current.scrollTo({
-        top: Math.max(0, topPos - 120),
+        top: Math.max(0, firstSpanTop - 100),
         behavior: 'smooth',
       });
-
-      // 4 秒后自动淡出高亮
-      highlightTimerRef.current = setTimeout(() => {
-        setPdfHighlightBox(null);
-      }, 4000);
     }
+
+    // 4 秒后自动淡出高亮
+    highlightTimerRef.current = setTimeout(() => {
+      setExactHighlightSpans([]);
+    }, 4500);
   };
 
-  // === 需求5 & 6: 划词选区监听与悬浮胶囊栏 ===
+  // === 划词选区监听与悬浮胶囊栏 ===
   const handleMarkdownSelection = () => {
     const selection = window.getSelection();
     if (!selection || selection.isCollapsed || !selection.toString().trim()) {
@@ -706,15 +758,18 @@ export default function PdfTranslator() {
       text,
     });
 
-    // 触发左侧原文联动高亮
-    triggerPdfHighlightForSelection(text);
+    // 触发精准词对词高亮
+    triggerExactHighlightForSelection(text);
   };
 
-  // 点击外部关闭悬浮胶囊栏
   useEffect(() => {
     const handleGlobalMouseDown = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
-      if (target.closest(`.${styles.floatingToolbar}`) || target.closest(`.${styles.explainCardModal}`)) {
+      if (
+        target.closest(`.${styles.floatingToolbar}`) || 
+        target.closest(`.${styles.explainCardModal}`) ||
+        target.closest(`.${styles.clipsSidebarToggle}`)
+      ) {
         return;
       }
       const selection = window.getSelection();
@@ -727,40 +782,38 @@ export default function PdfTranslator() {
     return () => window.removeEventListener('mousedown', handleGlobalMouseDown);
   }, []);
 
-  // === 需求5: 剪藏文字与飞入动效 ===
+  // === 需求2: 剪藏文字与飞入动效（飞向右边缘手柄） ===
   const handleAddClip = async () => {
     if (!floatingToolbar || !floatingToolbar.text || !activeFileId) return;
     const textToClip = floatingToolbar.text;
 
-    // 触发飞入吸入动效
     const selection = window.getSelection();
     let startRect = { top: floatingToolbar.top, left: floatingToolbar.left, width: 120, height: 30 };
     if (selection && !selection.isCollapsed) {
       startRect = selection.getRangeAt(0).getBoundingClientRect();
     }
 
-    const targetRect = clipsBtnRef.current?.getBoundingClientRect() || { top: 20, left: window.innerWidth - 60, width: 30, height: 30 };
+    const targetRect = toggleBtnRef.current?.getBoundingClientRect() || { top: window.innerHeight / 2, left: window.innerWidth - 30, width: 25, height: 40 };
 
-    setGhostFlyText(textToClip.slice(0, 30) + (textToClip.length > 30 ? '...' : ''));
+    setGhostFlyText(textToClip.slice(0, 24) + (textToClip.length > 24 ? '...' : ''));
     setGhostFlyStyle({
       top: startRect.top,
       left: startRect.left,
-      width: Math.min(260, Math.max(100, startRect.width)),
+      width: Math.min(240, Math.max(100, startRect.width)),
       transform: 'scale(1) translateY(0)',
       opacity: 1,
       filter: 'blur(0px)',
     });
 
-    // 触发吸入抽屉动画
     requestAnimationFrame(() => {
       setTimeout(() => {
         setGhostFlyStyle({
-          top: targetRect.top,
+          top: targetRect.top + targetRect.height / 2,
           left: targetRect.left,
-          width: 60,
-          transform: 'scale(0.2) translateY(-20px)',
+          width: 50,
+          transform: 'scale(0.2) translateY(0)',
           opacity: 0,
-          filter: 'blur(8px)',
+          filter: 'blur(6px)',
         });
       }, 50);
     });
@@ -783,20 +836,17 @@ export default function PdfTranslator() {
     setFloatingToolbar(null);
   };
 
-  // 删除剪藏
   const handleDeleteClip = async (clipId: string) => {
     if (!activeFileId) return;
     await deleteHistoryClip(activeFileId, clipId);
     setClips(prev => prev.filter(c => c.id !== clipId));
   };
 
-  // 复制剪藏
   const handleCopyClip = (text: string) => {
     navigator.clipboard.writeText(text);
     alert('已复制剪藏内容到剪贴板！');
   };
 
-  // 一键复制所有剪藏
   const handleCopyAllClips = () => {
     if (clips.length === 0) return;
     const content = clips
@@ -806,7 +856,6 @@ export default function PdfTranslator() {
     alert(`已复制全部 ${clips.length} 条剪藏内容！`);
   };
 
-  // 导出剪藏为 Markdown
   const handleExportClipsMarkdown = () => {
     if (clips.length === 0 || !file) return;
     let md = `# 📖 《${file.name.replace('.pdf', '')}》剪藏书摘\n\n`;
@@ -825,7 +874,7 @@ export default function PdfTranslator() {
     URL.revokeObjectURL(link.href);
   };
 
-  // === 需求6: AI 深度解释与多轮追问 ===
+  // === AI 深度解释与多轮追问 ===
   const handleOpenExplain = async () => {
     if (!floatingToolbar || !floatingToolbar.text) return;
     const textToExplain = floatingToolbar.text;
@@ -876,7 +925,6 @@ export default function PdfTranslator() {
     }
   };
 
-  // 提交深入追问
   const handleSendFollowUp = async () => {
     if (!explainFollowUpInput.trim() || isExplainLoading) return;
     const question = explainFollowUpInput.trim();
@@ -999,14 +1047,15 @@ export default function PdfTranslator() {
       {/* Left Pane - PDF Viewer */}
       {!isImmersive && (
         <div className={styles.leftPane} style={{ flexBasis: `calc(${leftPaneWidth}% - 6px)`, flexGrow: 0, flexShrink: 0 }}>
+          {/* 左侧顶栏：统一 52px 高度与水平对齐 */}
           <div className={styles.header}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0, flex: 1, marginRight: '10px' }}>
-              <button className={styles.btnSecondary} onClick={() => router.push('/')} title="返回首页">
-                ← 首页
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0, flex: 1, marginRight: '8px' }}>
+              <button className={styles.topNavIconBtn} onClick={() => router.push('/')} title="返回首页">
+                ←
               </button>
               
               {isEditingTitle ? (
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flex: 1 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flex: 1 }}>
                   <input
                     type="text"
                     value={editTitleValue}
@@ -1014,32 +1063,33 @@ export default function PdfTranslator() {
                     onKeyDown={(e) => e.key === 'Enter' && handleSaveTitle()}
                     autoFocus
                     style={{
-                      padding: '4px 8px',
-                      fontSize: '13px',
+                      padding: '3px 8px',
+                      fontSize: '12.5px',
                       borderRadius: '6px',
                       border: '1px solid var(--primary)',
                       background: 'var(--background)',
                       color: 'var(--foreground)',
                       flex: 1,
-                      minWidth: '120px'
+                      minWidth: '100px'
                     }}
                   />
-                  <button className={styles.btn} style={{ padding: '4px 8px', fontSize: '12px' }} onClick={handleSaveTitle}>
-                    确定
+                  <button className={styles.btn} style={{ padding: '3px 6px', fontSize: '11px' }} onClick={handleSaveTitle}>
+                    ✓
                   </button>
-                  <button className={styles.btnSecondary} style={{ padding: '4px 8px', fontSize: '12px' }} onClick={() => setIsEditingTitle(false)}>
-                    取消
+                  <button className={styles.btnSecondary} style={{ padding: '3px 6px', fontSize: '11px' }} onClick={() => setIsEditingTitle(false)}>
+                    ✕
                   </button>
                 </div>
               ) : (
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0, overflow: 'hidden' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '4px', minWidth: 0, overflow: 'hidden' }}>
                   <h2 
                     style={{ 
                       overflow: 'hidden', 
                       textOverflow: 'ellipsis', 
                       whiteSpace: 'nowrap',
-                      maxWidth: '280px',
-                      cursor: 'pointer'
+                      maxWidth: '220px',
+                      cursor: 'pointer',
+                      fontSize: '13px'
                     }} 
                     onClick={() => {
                       setEditTitleValue(file?.name || '');
@@ -1056,6 +1106,7 @@ export default function PdfTranslator() {
                       setIsEditingTitle(true);
                     }}
                     className={styles.iconBtn}
+                    style={{ padding: '2px', fontSize: '11px' }}
                     title="重命名此文件"
                   >
                     ✏️
@@ -1064,31 +1115,30 @@ export default function PdfTranslator() {
               )}
             </div>
 
+            {/* 左侧极简图标控制组 */}
             <div className={styles.controls}>
-              {/* Zoom controls */}
               <button 
                 type="button" 
-                className={styles.btnSecondary} 
+                className={styles.topNavIconBtn} 
                 onClick={() => setZoomScale(s => Math.max(0.6, s - 0.15))}
                 title="缩小"
               >
                 －
               </button>
-              <span style={{ fontSize: '12px', color: 'var(--text-muted)', minWidth: '38px', textAlign: 'center' }}>
+              <span style={{ fontSize: '11.5px', color: 'var(--text-muted)', minWidth: '34px', textAlign: 'center' }}>
                 {Math.round(zoomScale * 100)}%
               </span>
               <button 
                 type="button" 
-                className={styles.btnSecondary} 
+                className={styles.topNavIconBtn} 
                 onClick={() => setZoomScale(s => Math.min(2.0, s + 0.15))}
                 title="放大"
               >
                 ＋
               </button>
 
-              {/* Page Controls */}
-              <button className={styles.btn} disabled={pageNumber <= 1} onClick={() => changePage(-1)}>
-                上一页
+              <button className={styles.topNavIconBtn} disabled={pageNumber <= 1} onClick={() => changePage(-1)} title="上一页 (←)">
+                ◀
               </button>
               <input 
                 type="range" 
@@ -1096,46 +1146,49 @@ export default function PdfTranslator() {
                 max={numPages || 1} 
                 value={pageNumber} 
                 onChange={(e) => setPageNumber(Number(e.target.value))} 
-                style={{ width: '70px', cursor: 'pointer' }}
+                style={{ width: '60px', cursor: 'pointer' }}
                 title="快速拖拽翻页"
               />
-              <span className={styles.badge}>
-                {pageNumber} / {numPages || '-'}
+              <span className={styles.badge} style={{ padding: '2px 6px', fontSize: '10.5px' }}>
+                {pageNumber}/{numPages || '-'}
               </span>
-              <button className={styles.btn} disabled={pageNumber >= numPages} onClick={() => changePage(1)}>
-                下一页
+              <button className={styles.topNavIconBtn} disabled={pageNumber >= numPages} onClick={() => changePage(1)} title="下一页 (→)">
+                ▶
               </button>
             </div>
           </div>
 
           <div className={styles.pdfWrapper} ref={pdfWrapperRef}>
             {file && (
-              <Document
-                file={file}
-                onLoadSuccess={onDocumentLoadSuccess}
-                loading={<div className={styles.loadingOverlay}><div className={styles.spinner} /></div>}
-              >
-                <div style={{ position: 'relative' }}>
-                  <Page 
-                    pageNumber={pageNumber} 
-                    width={pdfRenderWidth * zoomScale} 
-                    renderTextLayer={true}
-                    renderAnnotationLayer={false}
-                  />
-                  {/* 原文联动琥珀高光遮罩 */}
-                  {pdfHighlightBox && (
-                    <div 
-                      className={styles.pdfHighlightOverlay}
-                      style={{
-                        top: `${pdfHighlightBox.top}px`,
-                        left: `${pdfHighlightBox.left}px`,
-                        width: `${pdfHighlightBox.width}px`,
-                        height: `${pdfHighlightBox.height}px`,
-                      }}
+              <div key={`pdf-page-${pageAnimKey}`} className={styles.pageFadeIn}>
+                <Document
+                  file={file}
+                  onLoadSuccess={onDocumentLoadSuccess}
+                  loading={<div className={styles.loadingOverlay}><div className={styles.spinner} /></div>}
+                >
+                  <div style={{ position: 'relative' }}>
+                    <Page 
+                      pageNumber={pageNumber} 
+                      width={pdfRenderWidth * zoomScale} 
+                      renderTextLayer={true}
+                      renderAnnotationLayer={false}
                     />
-                  )}
-                </div>
-              </Document>
+                    {/* 精准词对词行内划词荧光高亮 */}
+                    {exactHighlightSpans.map((rect, idx) => (
+                      <span 
+                        key={idx}
+                        className={styles.pdfExactHighlightSpan}
+                        style={{
+                          left: `${rect.left}px`,
+                          top: `${rect.top}px`,
+                          width: `${rect.width}px`,
+                          height: `${rect.height}px`,
+                        }}
+                      />
+                    ))}
+                  </div>
+                </Document>
+              </div>
             )}
           </div>
         </div>
@@ -1160,257 +1213,269 @@ export default function PdfTranslator() {
           flexShrink: 0 
         }}
       >
+        {/* 右侧顶栏：统一 52px 高度与水平对齐，极简图标 */}
         <div className={styles.header}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
             {isImmersive && (
-              <button className={styles.btnSecondary} onClick={() => router.push('/')} style={{ marginRight: '6px' }}>
-                ← 首页
+              <button className={styles.topNavIconBtn} onClick={() => router.push('/')} title="返回首页">
+                ←
               </button>
             )}
-            <h2>
-              {viewMode === 'translation' ? 'AI 译文 (中文)' : 'PaddleOCR 原文结构'}
+            <h2 style={{ fontSize: '13.5px' }}>
+              {viewMode === 'translation' ? 'AI 译文' : 'OCR 原文'}
               {isTranslating ? (
-                <span className={styles.badge} style={{ marginLeft: '6px' }}>⚡ 流式生成中</span>
+                <span className={styles.badge} style={{ marginLeft: '4px', fontSize: '10px' }}>⚡ 生成中</span>
               ) : isOcrLoading ? (
-                <span className={styles.badge} style={{ marginLeft: '6px' }}>🔍 OCR 识别中</span>
+                <span className={styles.badge} style={{ marginLeft: '4px', fontSize: '10px' }}>🔍 识别中</span>
               ) : translationCache[pageNumber] ? (
-                <span className={styles.badge} style={{ marginLeft: '6px' }}>已缓存</span>
+                <span className={styles.badge} style={{ marginLeft: '4px', fontSize: '10px' }}>已缓存</span>
               ) : null}
             </h2>
 
-            {/* OCR 结果与翻译切换 */}
             {ocrCache[pageNumber] && (
-              <div style={{ display: 'flex', gap: '4px', marginLeft: '6px' }}>
+              <div style={{ display: 'flex', gap: '3px', marginLeft: '4px' }}>
                 <button
                   type="button"
                   className={`${styles.presetBtn} ${viewMode === 'translation' ? styles.presetBtnActive : ''}`}
-                  style={{ padding: '3px 8px', fontSize: '11px' }}
+                  style={{ padding: '2px 6px', fontSize: '10px' }}
                   onClick={() => setViewMode('translation')}
                 >
-                  中文译文
+                  译文
                 </button>
                 <button
                   type="button"
                   className={`${styles.presetBtn} ${viewMode === 'ocr_source' ? styles.presetBtnActive : ''}`}
-                  style={{ padding: '3px 8px', fontSize: '11px' }}
+                  style={{ padding: '2px 6px', fontSize: '10px' }}
                   onClick={() => setViewMode('ocr_source')}
                 >
-                  OCR 原文结构
+                  OCR
                 </button>
               </div>
             )}
           </div>
 
+          {/* 右侧极简图标控制组 */}
           <div className={styles.controls}>
             <button 
               type="button" 
-              className={styles.themeToggleBtn} 
+              className={styles.topNavIconBtn} 
               onClick={toggleTheme}
-              title="切换主题"
+              title={theme === 'dark' ? '切换浅色模式' : '切换深色模式'}
             >
               {theme === 'dark' ? '☀️' : '🌙'}
-            </button>
-
-            {/* 剪藏库入口 */}
-            <button
-              ref={clipsBtnRef}
-              type="button"
-              className={styles.btnSecondary}
-              onClick={() => setIsClipsDrawerOpen(true)}
-              title="查看本书全部剪藏摘录"
-              style={{ display: 'inline-flex', alignItems: 'center', gap: '5px' }}
-            >
-              📑 剪藏 ({clips.length})
             </button>
 
             {isImmersive && (
               <button
                 type="button"
-                className={styles.btnSecondary}
+                className={styles.topNavIconBtn}
                 onClick={() => setFullWidthReading(w => !w)}
-                title="切换阅读栏宽度"
+                title={fullWidthReading ? '切换居中阅读' : '切换铺满全宽'}
               >
-                {fullWidthReading ? '🗖 居中阅读' : '🗗 铺满全宽'}
+                {fullWidthReading ? '🗖' : '🗗'}
               </button>
             )}
 
             <button
               type="button"
-              className={styles.btnSecondary}
+              className={`${styles.topNavIconBtn} ${isOcrLoading ? styles.topNavIconBtnActive : ''}`}
               onClick={() => runOcrOnCurrentPage(false)}
               disabled={!file || isOcrLoading}
-              title="使用百度飞桨 PaddleOCR-VL 识别本页（包含多模态表格与排版结构）"
+              title="百度飞桨 PaddleOCR 版面与图表识别"
             >
-              {isOcrLoading ? '识别中...' : '🔍 OCR 识别'}
+              🔍
             </button>
 
-            <label style={{ fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', background: 'var(--primary-surface)', border: '1px solid var(--primary-border)', color: 'var(--primary)', padding: '6px 12px', borderRadius: '10px', fontWeight: 600 }}>
-              <input 
-                type="checkbox" 
-                checked={isImmersive} 
-                onChange={(e) => setIsImmersive(e.target.checked)} 
-                style={{ margin: 0 }}
-              />
-              沉浸模式
-            </label>
+            <button 
+              type="button"
+              className={`${styles.topNavIconBtn} ${isImmersive ? styles.topNavIconBtnActive : ''}`}
+              onClick={() => setIsImmersive(prev => !prev)}
+              title={isImmersive ? '退出沉浸模式' : '进入沉浸阅读模式'}
+            >
+              🖥️
+            </button>
             
             <button 
-              className={styles.btnSecondary} 
+              type="button"
+              className={styles.topNavIconBtn} 
               onClick={downloadMarkdown} 
               disabled={Object.keys(translationCache).length === 0}
-              title="导出已翻译的所有页码为 Markdown"
+              title="导出已翻译 Markdown"
             >
-              ⬇ 导出 MD
+              ⬇
             </button>
             
-            <label style={{ fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', color: 'var(--text-muted)' }}>
-              <input 
-                type="checkbox" 
-                checked={autoTranslate} 
-                onChange={(e) => setAutoTranslate(e.target.checked)} 
-              />
-              翻页自动翻译
-            </label>
+            <button
+              type="button"
+              className={`${styles.topNavIconBtn} ${autoTranslate ? styles.topNavIconBtnActive : ''}`}
+              onClick={() => setAutoTranslate(prev => !prev)}
+              title={autoTranslate ? '自动翻译: 已开启' : '自动翻译: 已关闭 (点击开启)'}
+            >
+              ⚡
+            </button>
 
             <button
-              className={styles.btnSecondary}
+              type="button"
+              className={styles.topNavIconBtn}
               onClick={preTranslateNextPage}
               disabled={!file || pageNumber >= numPages || isPreTranslating || !!translationCache[pageNumber + 1]}
+              title={translationCache[pageNumber + 1] ? '下一页翻译已就绪' : '预加载翻译下一页'}
             >
-              {isPreTranslating ? '预加载中...' : translationCache[pageNumber + 1] ? '下页已就绪' : '预译下一页'}
+              ⏭
             </button>
             
             <button 
-              className={styles.btn} 
+              type="button"
+              className={`${styles.btn} ${styles.topNavIconBtnActive}`}
+              style={{ width: '32px', height: '32px', padding: 0, fontSize: '13px' }}
               onClick={() => translateCurrentPage(true)} 
               disabled={!file || isTranslating || isOcrLoading}
+              title={isTranslating ? '正在流式生成中...' : translatedText ? '重新翻译当前页' : '翻译此页'}
             >
-              {isTranslating ? '生成中...' : isOcrLoading ? 'OCR 提取中...' : translatedText ? '重新翻译' : '翻译此页'}
+              ↺
             </button>
           </div>
         </div>
 
-        <div 
-          className={styles.markdownWrapper}
-          ref={markdownContainerRef}
-          onMouseUp={handleMarkdownSelection}
-          onKeyUp={handleMarkdownSelection}
-        >
-          {isTranslating && !displayedText ? (
-            <div className={styles.loadingOverlay}>
-              <div className={styles.spinner} />
-              <p>{fullTextRef.current.includes('<think>') ? 'AI 正在深度思考中...' : '正在连接 AI 引擎流式输出...'}</p>
-            </div>
-          ) : isOcrLoading ? (
-            <div className={styles.loadingOverlay}>
-              <div className={styles.spinner} />
-              <p>百度飞桨 PaddleOCR 正在解析页面版面、表格与文字...</p>
-            </div>
-          ) : error ? (
-            <div style={{ color: 'var(--accent-rose)', padding: '16px', background: 'rgba(244, 63, 94, 0.1)', borderRadius: '12px', border: '1px solid rgba(244, 63, 94, 0.2)' }}>
-              {error}
-            </div>
-          ) : viewMode === 'ocr_source' && ocrCache[pageNumber] ? (
-            <div 
-              style={{ 
-                maxWidth: isImmersive ? (fullWidthReading ? '100%' : '900px') : 'none', 
-                margin: isImmersive ? '0 auto' : '0',
-                fontSize: isImmersive ? '16px' : '15px',
-                lineHeight: isImmersive ? '1.9' : '1.8',
-              }}
-            >
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', borderBottom: '1px solid var(--glass-border)', paddingBottom: '8px' }}>
-                <span style={{ fontSize: '13px', color: 'var(--primary)', fontWeight: 600 }}>🔍 百度飞桨 OCR 识别结果</span>
-                <button 
-                  className={styles.btn} 
-                  style={{ padding: '4px 10px', fontSize: '12px' }}
-                  onClick={() => executeTranslateText(ocrCache[pageNumber], pageNumber)}
-                >
-                  🚀 将此 OCR 内容翻译为中文
-                </button>
-              </div>
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                {ocrCache[pageNumber]}
-              </ReactMarkdown>
-            </div>
-          ) : (
-            <div 
-              style={{ 
-                maxWidth: isImmersive ? (fullWidthReading ? '100%' : '900px') : 'none', 
-                margin: isImmersive ? '0 auto' : '0',
-                fontSize: isImmersive ? '17px' : '15.5px',
-                lineHeight: isImmersive ? '2.0' : '1.85',
-                transition: 'all 0.25s ease'
-              }}
-            >
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                {displayedText ? displayedText : '待翻译或翻页中...'}
-              </ReactMarkdown>
-              {isTranslating && <span className={styles.cursorPulse}> ▍</span>}
-            </div>
-          )}
-        </div>
-      </div>
+        {/* 需求2: 平级分栏工作区与右侧小三角伸缩手柄 */}
+        <div className={styles.rightPaneBody}>
+          {/* 小三角伸缩手柄（图1红圈位置） */}
+          <button
+            ref={toggleBtnRef}
+            type="button"
+            className={`${styles.clipsSidebarToggle} ${isClipsDrawerOpen ? styles.clipsSidebarToggleActive : ''}`}
+            onClick={() => setIsClipsDrawerOpen(prev => !prev)}
+            title={isClipsDrawerOpen ? '收起剪藏栏' : '展开剪藏侧栏'}
+          >
+            {isClipsDrawerOpen ? '▶' : '◀'}
+            <span className={styles.clipsBadgeMini}>{clips.length}</span>
+          </button>
 
-      {/* 剪藏侧边栏抽屉 (Clips Drawer) */}
-      {isClipsDrawerOpen && (
-        <div className={styles.clipsDrawerOverlay} onClick={() => setIsClipsDrawerOpen(false)}>
-          <div className={styles.clipsDrawer} onClick={e => e.stopPropagation()}>
+          {/* 译文主体视口 */}
+          <div 
+            key={`md-page-${pageAnimKey}`}
+            className={`${styles.markdownWrapper} ${styles.pageFadeIn}`}
+            ref={markdownContainerRef}
+            onMouseUp={handleMarkdownSelection}
+            onKeyUp={handleMarkdownSelection}
+          >
+            {isTranslating && !displayedText ? (
+              <div className={styles.loadingOverlay}>
+                <div className={styles.spinner} />
+                <p>{fullTextRef.current.includes('<think>') ? 'AI 正在深度思考中...' : '正在连接 AI 引擎流式输出...'}</p>
+              </div>
+            ) : isOcrLoading ? (
+              <div className={styles.loadingOverlay}>
+                <div className={styles.spinner} />
+                <p>百度飞桨 PaddleOCR 正在解析页面版面、表格与文字...</p>
+              </div>
+            ) : error ? (
+              <div style={{ color: 'var(--accent-rose)', padding: '16px', background: 'rgba(244, 63, 94, 0.1)', borderRadius: '12px', border: '1px solid rgba(244, 63, 94, 0.2)' }}>
+                {error}
+              </div>
+            ) : viewMode === 'ocr_source' && ocrCache[pageNumber] ? (
+              <div 
+                style={{ 
+                  maxWidth: isImmersive ? (fullWidthReading ? '100%' : '900px') : 'none', 
+                  margin: isImmersive ? '0 auto' : '0',
+                  fontSize: isImmersive ? '16px' : '15px',
+                  lineHeight: isImmersive ? '1.9' : '1.8',
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', borderBottom: '1px solid var(--glass-border)', paddingBottom: '8px' }}>
+                  <span style={{ fontSize: '13px', color: 'var(--primary)', fontWeight: 600 }}>🔍 百度飞桨 OCR 识别结果</span>
+                  <button 
+                    className={styles.btn} 
+                    style={{ padding: '4px 10px', fontSize: '12px' }}
+                    onClick={() => executeTranslateText(ocrCache[pageNumber], pageNumber)}
+                  >
+                    🚀 将此 OCR 内容翻译为中文
+                  </button>
+                </div>
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  {ocrCache[pageNumber]}
+                </ReactMarkdown>
+              </div>
+            ) : (
+              <div 
+                style={{ 
+                  maxWidth: isImmersive ? (fullWidthReading ? '100%' : '900px') : 'none', 
+                  margin: isImmersive ? '0 auto' : '0',
+                  fontSize: isImmersive ? '17px' : '15.5px',
+                  lineHeight: isImmersive ? '2.0' : '1.85',
+                  transition: 'all 0.25s ease'
+                }}
+              >
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  {displayedText ? displayedText : '待翻译或翻页中...'}
+                </ReactMarkdown>
+                {isTranslating && <span className={styles.cursorPulse}> ▍</span>}
+              </div>
+            )}
+          </div>
+
+          {/* 平级并排剪藏栏 (无黑遮罩，与译文并排展示) */}
+          <div className={`${styles.inlineClipsSidebar} ${!isClipsDrawerOpen ? styles.inlineClipsSidebarClosed : ''}`}>
             <div className={styles.clipsHeader}>
-              <h3>📑 本书剪藏摘录 ({clips.length})</h3>
-              <div style={{ display: 'flex', gap: '8px' }}>
+              <h3 style={{ fontSize: '14px' }}>📑 本书剪藏 ({clips.length})</h3>
+              <div style={{ display: 'flex', gap: '4px' }}>
                 <button 
-                  className={styles.btnSecondary} 
-                  style={{ padding: '4px 8px', fontSize: '12px' }}
+                  className={styles.topNavIconBtn} 
+                  style={{ width: '26px', height: '26px', fontSize: '11px' }}
                   onClick={handleCopyAllClips}
                   disabled={clips.length === 0}
                   title="一键复制全部剪藏"
                 >
-                  📋 复制全部
+                  📋
                 </button>
                 <button 
-                  className={styles.btnSecondary} 
-                  style={{ padding: '4px 8px', fontSize: '12px' }}
+                  className={styles.topNavIconBtn} 
+                  style={{ width: '26px', height: '26px', fontSize: '11px' }}
                   onClick={handleExportClipsMarkdown}
                   disabled={clips.length === 0}
                   title="导出为 Markdown 书摘"
                 >
-                  ⬇ 导出 MD
+                  ⬇
                 </button>
                 <button 
-                  className={styles.iconBtn} 
+                  className={styles.topNavIconBtn} 
+                  style={{ width: '26px', height: '26px', fontSize: '11px' }}
                   onClick={() => setIsClipsDrawerOpen(false)}
-                  title="关闭抽屉"
+                  title="收起剪藏栏"
                 >
                   ✕
                 </button>
               </div>
             </div>
 
-            <div className={styles.clipsList}>
+            <div className={styles.clipsList} style={{ padding: '14px' }}>
               {clips.length === 0 ? (
-                <div style={{ textAlign: 'center', padding: '48px 16px', color: 'var(--text-muted)', fontSize: '14px' }}>
+                <div style={{ textAlign: 'center', padding: '40px 10px', color: 'var(--text-muted)', fontSize: '13px' }}>
                   <p>暂无剪藏内容</p>
-                  <p style={{ fontSize: '12px', marginTop: '6px' }}>在右侧译文中鼠标划词选中任意段落，点击【📌 剪藏】即可收录至此</p>
+                  <p style={{ fontSize: '11.5px', marginTop: '6px' }}>在译文中划词选中文字，点击【📌 剪藏】即可收录</p>
                 </div>
               ) : (
                 clips.map(clip => (
-                  <div key={clip.id} className={styles.clipCard}>
+                  <div key={clip.id} className={styles.clipCard} style={{ padding: '12px' }}>
                     <div className={styles.clipMeta}>
+                      {/* 需求5: 点击跳转时不关闭侧栏，且带平滑过渡 */}
                       <span 
-                        style={{ cursor: 'pointer', color: 'var(--primary)', fontWeight: 600 }}
-                        onClick={() => { setPageNumber(clip.pageNumber); setIsClipsDrawerOpen(false); }}
-                        title="点击跳转至此页"
+                        style={{ cursor: 'pointer', color: 'var(--primary)', fontWeight: 600, fontSize: '12px' }}
+                        onClick={() => {
+                          setPageNumber(clip.pageNumber);
+                          triggerExactHighlightForSelection(clip.text);
+                        }}
+                        title="点击跳转至此页（侧栏保持常驻）"
                       >
                         第 {clip.pageNumber} 页 ↗
                       </span>
-                      <span>{new Date(clip.createdAt).toLocaleDateString()} {new Date(clip.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                      <span style={{ fontSize: '10.5px' }}>{new Date(clip.createdAt).toLocaleDateString()}</span>
                     </div>
-                    <p className={styles.clipContent}>{clip.text}</p>
+                    <p className={styles.clipContent} style={{ fontSize: '12.5px', lineHeight: '1.65' }}>{clip.text}</p>
                     <div className={styles.clipActions}>
                       <button 
                         className={styles.btnSecondary} 
-                        style={{ padding: '2px 8px', fontSize: '11px' }}
+                        style={{ padding: '2px 6px', fontSize: '10.5px' }}
                         onClick={() => handleCopyClip(clip.text)}
                         title="复制此段"
                       >
@@ -1418,7 +1483,7 @@ export default function PdfTranslator() {
                       </button>
                       <button 
                         className={styles.btnSecondary} 
-                        style={{ padding: '2px 8px', fontSize: '11px', color: 'var(--accent-rose)' }}
+                        style={{ padding: '2px 6px', fontSize: '10.5px', color: 'var(--accent-rose)' }}
                         onClick={() => handleDeleteClip(clip.id)}
                         title="删除此条剪藏"
                       >
@@ -1431,7 +1496,7 @@ export default function PdfTranslator() {
             </div>
           </div>
         </div>
-      )}
+      </div>
 
       {/* AI 深度解释与追问卡片小窗 (Explain Modal) */}
       {isExplainModalOpen && (
@@ -1443,12 +1508,10 @@ export default function PdfTranslator() {
             </div>
 
             <div className={styles.explainBody}>
-              {/* 选中的词句引用 */}
               <div className={styles.explainSelectionQuote}>
                 “{explainTargetText}”
               </div>
 
-              {/* 首轮解释解析 */}
               {isExplainLoading && !explainResultText && explainHistory.length === 0 ? (
                 <div style={{ display: 'flex', alignItems: 'center', gap: '10px', color: 'var(--primary)', padding: '20px 0' }}>
                   <div className={styles.spinner} style={{ width: '20px', height: '20px' }} />
@@ -1460,7 +1523,6 @@ export default function PdfTranslator() {
                 </ReactMarkdown>
               )}
 
-              {/* 多轮追问历史 */}
               {explainHistory.length > 0 && (
                 <div className={styles.explainChatHistory}>
                   {explainHistory.map((msg, idx) => (
@@ -1522,6 +1584,7 @@ export default function PdfTranslator() {
     </div>
   );
 }
+
 
 
 

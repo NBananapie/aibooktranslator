@@ -78,20 +78,23 @@
 }
 
 .header {
-  padding: 10px 18px;
+  height: 52px;
+  min-height: 52px;
+  max-height: 52px;
+  padding: 0 16px;
   border-bottom: 1px solid var(--glass-border);
   display: flex;
   justify-content: space-between;
   align-items: center;
   background: var(--glass-bg);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
   z-index: 10;
-  min-height: 54px;
+  box-sizing: border-box;
 }
 
 .header h2 {
-  font-size: 14px;
+  font-size: 13.5px;
   font-weight: 600;
   margin: 0;
   letter-spacing: -0.01em;
@@ -103,8 +106,41 @@
 
 .controls {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   align-items: center;
+}
+
+.topNavIconBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  color: var(--foreground);
+  font-size: 13.5px;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  position: relative;
+  flex-shrink: 0;
+  padding: 0;
+}
+
+.topNavIconBtn:hover:not(:disabled) {
+  background: var(--primary-surface);
+  border-color: var(--primary-border);
+  color: var(--primary);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px var(--primary-glow);
+}
+
+.topNavIconBtnActive {
+  background: var(--primary) !important;
+  color: #ffffff !important;
+  border-color: var(--primary) !important;
+  box-shadow: 0 2px 8px var(--primary-glow);
 }
 
 /* === BUTTONS & CONTROLS === */
@@ -1264,5 +1300,121 @@
   border-color: var(--primary);
   box-shadow: 0 0 0 3px var(--primary-surface);
 }
+
+/* === 原文精准词对词划词高亮 (Exact Highlight Spans) === */
+.pdfExactHighlightSpan {
+  position: absolute;
+  background: rgba(245, 158, 11, 0.42);
+  border-bottom: 2px solid var(--primary);
+  border-radius: 3px;
+  box-shadow: 0 0 10px var(--primary-glow);
+  pointer-events: none;
+  transition: all 0.2s ease;
+  animation: exactPulse 1.8s infinite ease-in-out;
+  z-index: 12;
+}
+
+@keyframes exactPulse {
+  0%, 100% {
+    background: rgba(245, 158, 11, 0.38);
+    box-shadow: 0 0 8px var(--primary-glow);
+  }
+  50% {
+    background: rgba(245, 158, 11, 0.58);
+    box-shadow: 0 0 16px var(--primary-glow);
+  }
+}
+
+/* === 平级分栏布局与右侧小三角伸缩手柄 === */
+.rightPaneBody {
+  flex: 1;
+  display: flex;
+  position: relative;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.clipsSidebarToggle {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  width: 22px;
+  height: 64px;
+  background: var(--surface-1);
+  border: 1px solid var(--primary-border);
+  border-right: none;
+  border-radius: 10px 0 0 10px;
+  color: var(--primary);
+  cursor: pointer;
+  box-shadow: -4px 0 16px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  font-size: 11px;
+  padding: 0;
+}
+
+.clipsSidebarToggle:hover {
+  width: 28px;
+  background: var(--primary-surface);
+  box-shadow: -6px 0 20px var(--primary-glow);
+}
+
+.clipsSidebarToggleActive {
+  right: 320px;
+}
+
+.clipsBadgeMini {
+  font-size: 10px;
+  font-weight: 700;
+  background: var(--primary);
+  color: #ffffff;
+  border-radius: 9999px;
+  padding: 1px 4px;
+  line-height: 1;
+}
+
+.inlineClipsSidebar {
+  width: 320px;
+  flex-shrink: 0;
+  background: var(--surface-1);
+  border-left: 1px solid var(--glass-border);
+  display: flex;
+  flex-direction: column;
+  transition: width 0.3s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.3s ease;
+  overflow: hidden;
+  z-index: 30;
+}
+
+.inlineClipsSidebarClosed {
+  width: 0 !important;
+  border-left: none !important;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* === 翻页平滑淡入动效 === */
+.pageFadeIn {
+  animation: pageFadeInAnim 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes pageFadeInAnim {
+  from {
+    opacity: 0.35;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 
 
