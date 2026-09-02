@@ -156,9 +156,15 @@ async function handleOpenAIStream(params: {
 }) {
   const { apiKey, baseUrl, model, text, systemPrompt } = params;
 
-  let cleanBaseUrl = baseUrl.trim();
-  if (!cleanBaseUrl.endsWith('/')) cleanBaseUrl += '/';
-  const apiUrl = `${cleanBaseUrl}chat/completions`;
+  let cleanBaseUrl = baseUrl.trim().replace(/\/+$/, '');
+  let apiUrl = '';
+  if (cleanBaseUrl.endsWith('/chat/completions')) {
+    apiUrl = cleanBaseUrl;
+  } else if (cleanBaseUrl.endsWith('/v1')) {
+    apiUrl = `${cleanBaseUrl}/chat/completions`;
+  } else {
+    apiUrl = `${cleanBaseUrl}/v1/chat/completions`;
+  }
 
   const response = await fetch(apiUrl, {
     method: 'POST',
@@ -179,7 +185,7 @@ async function handleOpenAIStream(params: {
 
   if (!response.ok) {
     const errorText = await response.text();
-    let errorMessage = `API returned ${response.status}`;
+    let errorMessage = `API 响应失败 (${response.status})`;
     try {
       const errorJson = JSON.parse(errorText);
       if (errorJson.error?.message) {
@@ -188,7 +194,7 @@ async function handleOpenAIStream(params: {
         errorMessage = typeof errorJson.error === 'string' ? errorJson.error : JSON.stringify(errorJson.error);
       }
     } catch {
-      errorMessage = `Status ${response.status}: ${errorText.slice(0, 200)}`;
+      errorMessage = `API 错误 (${response.status}): ${errorText.slice(0, 200)}`;
     }
     return NextResponse.json({ error: errorMessage, details: errorText }, { status: response.status });
   }
@@ -261,7 +267,7 @@ export async function POST(req: Request) {
     } = body;
 
     if (!text) {
-      return NextResponse.json({ error: 'No text provided' }, { status: 400 });
+      return NextResponse.json({ error: '未提供待翻译文本' }, { status: 400 });
     }
 
     const allowServerKey = process.env.ALLOW_SERVER_API_KEY === 'true';
@@ -269,22 +275,21 @@ export async function POST(req: Request) {
 
     if (!apiKey) {
       return NextResponse.json(
-        { error: '请先在「设置」里填入你自己的 API Key（不会上传或保存）' },
+        { error: '请先在「设置」里填入您的 API Key（数据仅在本地，不会上传）' },
         { status: 401 }
       );
     }
 
     const systemPrompt = buildSystemPrompt(customPrompt, targetLanguage);
 
-    // 智能判定协议类型
+    // 精准判定协议类型：仅当明确选择 gemini 或 BaseURL 为 googleapis 时走原生 Google 协议
     const isGemini =
       clientProvider === 'gemini' ||
-      (clientBaseUrl && clientBaseUrl.includes('googleapis.com')) ||
-      (clientModel && clientModel.toLowerCase().startsWith('gemini'));
+      (clientBaseUrl && clientBaseUrl.includes('googleapis.com'));
 
     if (isGemini) {
       const baseUrl = clientBaseUrl || 'https://generativelanguage.googleapis.com';
-      const model = clientModel || 'gemini-3.7-flash';
+      const model = clientModel || 'gemini-2.5-flash';
       return await handleGeminiStream({
         apiKey,
         baseUrl,
@@ -294,7 +299,7 @@ export async function POST(req: Request) {
       });
     }
 
-    // 默认 OpenAI 兼容协议
+    // 默认走标准 OpenAI 兼容协议 (支持 MiniMax, OpenAI, DeepSeek, 各种第三方转发网关)
     const baseUrl = clientBaseUrl || process.env.MINIMAX_BASE_URL || 'https://api.minimax.chat/v1';
     const model = clientModel || process.env.TRANSLATE_MODEL || 'MiniMax-M2.7-highspeed';
 
@@ -306,9 +311,9 @@ export async function POST(req: Request) {
       systemPrompt,
     });
   } catch (error: any) {
-    console.error('Edge Route Error:', error);
+    console.error('Translate Route Error:', error);
     return NextResponse.json(
-      { error: `Internal Server Error: ${error.message}` },
+      { error: `翻译服务异常: ${error.message || error}` },
       { status: 500 }
     );
   }

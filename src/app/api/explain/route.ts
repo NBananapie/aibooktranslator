@@ -128,9 +128,15 @@ async function handleOpenAIExplainStream(params: {
 }) {
   const { apiKey, baseUrl, model, messages } = params;
 
-  let cleanBaseUrl = baseUrl.trim();
-  if (!cleanBaseUrl.endsWith('/')) cleanBaseUrl += '/';
-  const apiUrl = `${cleanBaseUrl}chat/completions`;
+  let cleanBaseUrl = baseUrl.trim().replace(/\/+$/, '');
+  let apiUrl = '';
+  if (cleanBaseUrl.endsWith('/chat/completions')) {
+    apiUrl = cleanBaseUrl;
+  } else if (cleanBaseUrl.endsWith('/v1')) {
+    apiUrl = `${cleanBaseUrl}/chat/completions`;
+  } else {
+    apiUrl = `${cleanBaseUrl}/v1/chat/completions`;
+  }
 
   const response = await fetch(apiUrl, {
     method: 'POST',
@@ -148,7 +154,7 @@ async function handleOpenAIExplainStream(params: {
 
   if (!response.ok) {
     const errorText = await response.text();
-    let errorMessage = `API returned ${response.status}`;
+    let errorMessage = `API 响应失败 (${response.status})`;
     try {
       const errorJson = JSON.parse(errorText);
       if (errorJson.error?.message) {
@@ -157,7 +163,7 @@ async function handleOpenAIExplainStream(params: {
         errorMessage = typeof errorJson.error === 'string' ? errorJson.error : JSON.stringify(errorJson.error);
       }
     } catch {
-      errorMessage = `Status ${response.status}: ${errorText.slice(0, 200)}`;
+      errorMessage = `API 错误 (${response.status}): ${errorText.slice(0, 200)}`;
     }
     return NextResponse.json({ error: errorMessage, details: errorText }, { status: response.status });
   }
@@ -246,11 +252,10 @@ export async function POST(req: Request) {
 
     const systemPrompt = buildExplainSystemPrompt();
 
-    // 智能判定协议类型
+    // 精准判定协议类型：仅当明确选择 gemini 或 BaseURL 为 googleapis 时走原生 Google 协议
     const isGemini =
       clientProvider === 'gemini' ||
-      (clientBaseUrl && clientBaseUrl.includes('googleapis.com')) ||
-      (clientModel && clientModel.toLowerCase().startsWith('gemini'));
+      (clientBaseUrl && clientBaseUrl.includes('googleapis.com'));
 
     // 构造首轮/多轮消息
     let userPrompt = '';
@@ -262,7 +267,7 @@ export async function POST(req: Request) {
 
     if (isGemini) {
       const baseUrl = clientBaseUrl || 'https://generativelanguage.googleapis.com';
-      const model = clientModel || 'gemini-3.7-flash';
+      const model = clientModel || 'gemini-2.5-flash';
 
       const contents: any[] = [];
       if (Array.isArray(history) && history.length > 0) {
