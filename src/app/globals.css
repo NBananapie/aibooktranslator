@@ -182,14 +182,15 @@ a:hover {
 
 .react-pdf__Page {
   position: relative !important;
-  background-color: transparent !important;
+  background-color: #ffffff !important;
+  box-shadow: 0 6px 28px rgba(0, 0, 0, 0.45);
+  border-radius: 4px;
 }
 
 .react-pdf__Page__canvas {
   display: block !important;
   margin: 0 auto !important;
-  background-color: transparent !important;
-  transition: opacity 0.2s cubic-bezier(0.16, 1, 0.3, 1) !important;
+  background-color: #ffffff !important;
   border-radius: 4px;
 }
 
