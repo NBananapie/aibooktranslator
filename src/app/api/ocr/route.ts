@@ -137,16 +137,21 @@ function extractTextFromPaddleResult(result: any): string {
 
 // 异步提交并轮询百度飞桨 AIStudio PaddleOCR 作业
 async function runPaddleOcrJob(
-  token: string,
+  rawToken: string,
   modelName: string,
   imageBytes: Uint8Array,
   apiUrl?: string
 ): Promise<{ text: string; raw: any }> {
-  const baseBaseUrl = apiUrl && apiUrl.includes('/api/v2/ocr/jobs')
-    ? apiUrl
+  // 清洗 Token 前缀，确保标准 Bearer 鉴权
+  const token = rawToken.replace(/^Bearer\s+/i, '').replace(/^token\s+/i, '').trim();
+
+  const baseBaseUrl = (apiUrl && apiUrl.includes('/api/v2/ocr/jobs'))
+    ? apiUrl.trim().replace(/\/+$/, '')
     : 'https://paddleocr.aistudio-app.com/api/v2/ocr/jobs';
 
-  const candidateModels = [modelName, 'PP-OCRv6', 'PP-StructureV3'];
+  const candidateModels = [modelName, 'PP-OCRv6', 'PP-StructureV3'].filter(
+    (m, idx, self) => Boolean(m) && self.indexOf(m) === idx
+  );
   let lastErrorMsg = '';
 
   for (const currentModel of candidateModels) {
@@ -155,7 +160,7 @@ async function runPaddleOcrJob(
       formData.append('model', currentModel);
       formData.append('optionalPayload', JSON.stringify({}));
       
-      const blob = new Blob([imageBytes.buffer as ArrayBuffer], { type: 'image/png' });
+      const blob = new Blob([imageBytes as any], { type: 'image/png' });
       formData.append('file', blob, 'page_screenshot.png');
 
       const submitRes = await fetch(baseBaseUrl, {
@@ -166,10 +171,16 @@ async function runPaddleOcrJob(
         body: formData,
       });
 
-      const submitData = await submitRes.json().catch(() => null);
+      const submitText = await submitRes.text();
+      let submitData: any = null;
+      try {
+        submitData = JSON.parse(submitText);
+      } catch {
+        submitData = { msg: submitText };
+      }
 
       if (!submitRes.ok || !submitData) {
-        lastErrorMsg = submitData?.msg || submitData?.message || `提交失败 (${submitRes.status})`;
+        lastErrorMsg = submitData?.msg || submitData?.message || `百度提交失败 (${submitRes.status}): ${submitText.slice(0, 200)}`;
         // 如果是队列满，尝试下一个候选模型
         if (submitData?.code === 10010) {
           continue;
@@ -187,11 +198,11 @@ async function runPaddleOcrJob(
 
       const jobId = submitData.data?.jobId || submitData.jobId || submitData.data?.id;
       if (!jobId) {
-        throw new Error('未获取到百度飞桨 OCR 任务 ID');
+        throw new Error(`未获取到百度飞桨 OCR 任务 ID: ${submitText.slice(0, 200)}`);
       }
 
-      // 轮询等待任务完成 (最多轮询 25 次，约 30 秒)
-      for (let i = 0; i < 25; i++) {
+      // 轮询等待任务完成 (最多轮询 20 次，约 25 秒)
+      for (let i = 0; i < 20; i++) {
         await new Promise((resolve) => setTimeout(resolve, 1200));
 
         const pollRes = await fetch(`${baseBaseUrl}/${jobId}`, {
@@ -202,7 +213,14 @@ async function runPaddleOcrJob(
 
         if (!pollRes.ok) continue;
 
-        const pollData = await pollRes.json().catch(() => null);
+        const pollText = await pollRes.text();
+        let pollData: any = null;
+        try {
+          pollData = JSON.parse(pollText);
+        } catch {
+          continue;
+        }
+
         if (!pollData || pollData.code !== 0) continue;
 
         const state = pollData.data?.state || pollData.state;
@@ -235,7 +253,7 @@ async function runPaddleOcrJob(
         }
       }
 
-      throw new Error('OCR 识别任务超时，请重试');
+      throw new Error('OCR 识别任务超时，请稍后重试');
     } catch (err: any) {
       lastErrorMsg = err.message || String(err);
       if (currentModel === candidateModels[candidateModels.length - 1]) {
@@ -244,7 +262,7 @@ async function runPaddleOcrJob(
     }
   }
 
-  throw new Error(lastErrorMsg || 'OCR 识别遇到异常');
+  throw new Error(lastErrorMsg || 'OCR 识别遇到未知异常');
 }
 
 export async function POST(req: Request) {

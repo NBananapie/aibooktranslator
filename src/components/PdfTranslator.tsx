@@ -542,9 +542,16 @@ export default function PdfTranslator() {
         }),
       });
 
-      const data = await res.json();
+      const resText = await res.text();
+      let data: any = {};
+      try {
+        data = JSON.parse(resText);
+      } catch {
+        data = { error: resText || `HTTP ${res.status} OCR 服务异常` };
+      }
+
       if (!res.ok) {
-        throw new Error(data.error || 'OCR 识别请求失败');
+        throw new Error(data.error || data.message || `OCR 识别请求失败 (${res.status})`);
       }
 
       const ocrMarkdown = data.markdown || data.text || '';
@@ -1377,7 +1384,6 @@ export default function PdfTranslator() {
                     renderAnnotationLayer={false}
                     loading={null}
                     noData={null}
-                    canvasBackground="transparent"
                   />
                   {/* 语义级精准词对词行内划词荧光高亮 */}
                   {exactHighlightSpans.map((rect, idx) => (
