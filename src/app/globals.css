@@ -143,3 +143,44 @@ a:hover {
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(245, 158, 11, 0.6);
 }
+
+/* === 彻底根除 PDF.js / react-pdf 文本层重影 === */
+.react-pdf__Page__textContent,
+.textLayer {
+  position: absolute !important;
+  left: 0 !important;
+  top: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  overflow: hidden !important;
+  opacity: 1 !important;
+  line-height: 1.0 !important;
+  transform-origin: 0 0 !important;
+  user-select: text !important;
+  pointer-events: auto !important;
+}
+
+.react-pdf__Page__textContent span,
+.textLayer span,
+.react-pdf__Page__textContent br,
+.textLayer br {
+  color: transparent !important;
+  position: absolute !important;
+  white-space: pre !important;
+  cursor: text !important;
+  transform-origin: 0% 0% !important;
+  background: transparent !important;
+  -webkit-text-fill-color: transparent !important;
+}
+
+.react-pdf__Page__textContent ::selection,
+.textLayer ::selection {
+  color: transparent !important;
+  background: rgba(245, 158, 11, 0.38) !important;
+  -webkit-text-fill-color: transparent !important;
+}
+
+.react-pdf__Page {
+  position: relative !important;
+}
+
