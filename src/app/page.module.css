@@ -1037,18 +1037,34 @@
   transform-origin: center center;
 }
 
-/* === 译文已剪藏标记 === */
-.clippedMark {
-  background: rgba(245, 158, 11, 0.2);
+/* === 剪藏高亮划线与状态表示 === */
+.clippedTextSpan {
+  background: rgba(245, 158, 11, 0.18);
   border-bottom: 2px dashed var(--primary);
-  padding: 1px 4px;
-  border-radius: 4px;
-  color: inherit;
-  transition: all 0.2s;
+  border-radius: 2px;
+  padding: 1px 3px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.clippedTextSpan:hover {
+  background: rgba(245, 158, 11, 0.32);
+  box-shadow: 0 0 12px var(--primary-glow);
+}
+
+.clippedMark {
+  display: inline;
+  background: rgba(245, 158, 11, 0.18);
+  border-bottom: 2px dashed var(--primary);
+  border-radius: 2px;
+  padding: 1px 3px;
+  cursor: pointer;
+  transition: all 0.2s ease;
 }
 
 .clippedMark:hover {
-  background: rgba(245, 158, 11, 0.35);
+  background: rgba(245, 158, 11, 0.32);
+  box-shadow: 0 0 12px var(--primary-glow);
 }
 
 /* === 剪藏侧边栏抽屉 (Clips Drawer) === */
@@ -1082,18 +1098,24 @@
 }
 
 .clipsHeader {
-  padding: 18px 24px;
-  border-bottom: 1px solid var(--glass-border);
+  height: 52px;
+  min-height: 52px;
+  max-height: 52px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--card-border);
   display: flex;
   justify-content: space-between;
   align-items: center;
-  background: var(--glass-bg);
+  background: var(--surface-1);
+  flex-shrink: 0;
+  box-sizing: border-box;
+  z-index: 10;
 }
 
 .clipsHeader h3 {
   margin: 0;
-  font-size: 16px;
-  font-weight: 700;
+  font-size: 13.5px;
+  font-weight: 600;
   color: var(--foreground);
   display: flex;
   align-items: center;
@@ -1103,10 +1125,10 @@
 .clipsList {
   flex: 1;
   overflow-y: auto;
-  padding: 20px;
+  padding: 14px;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
 }
 
 .clipCard {

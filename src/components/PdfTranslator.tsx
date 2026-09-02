@@ -143,6 +143,37 @@ function splitSentences(text: string, isZh = false): Array<{ text: string; start
   return sentences;
 }
 
+// 提取纯净 Markdown 与隐藏双向对齐映射 (BILINGUAL_MAP)
+function parseTranslationOutput(rawText: string): {
+  cleanMarkdown: string;
+  alignmentMap: Array<{ zh: string; en: string }>;
+} {
+  if (!rawText) return { cleanMarkdown: '', alignmentMap: [] };
+
+  let cleanMarkdown = rawText;
+  let alignmentMap: Array<{ zh: string; en: string }> = [];
+
+  // 1. 尝试提取 <!-- BILINGUAL_MAP: [...] -->
+  const mapMatch = rawText.match(/<!--\s*BILINGUAL_MAP:?\s*([\s\S]*?)-->/i);
+  if (mapMatch && mapMatch[1]) {
+    try {
+      const jsonStr = mapMatch[1].trim();
+      const parsed = JSON.parse(jsonStr);
+      if (Array.isArray(parsed)) {
+        alignmentMap = parsed.filter(item => item && (item.zh || item.en));
+      }
+    } catch (e) {
+      // JSON 解析容错
+    }
+    cleanMarkdown = rawText.replace(/<!--\s*BILINGUAL_MAP:?[\s\S]*?-->/gi, '').trim();
+  }
+
+  // 2. 移除大模型 <think> 思维链标签
+  cleanMarkdown = cleanMarkdown.replace(/<think>[\s\S]*?(<\/think>|$)/g, '').trim();
+
+  return { cleanMarkdown, alignmentMap };
+}
+
 export default function PdfTranslator() {
   const { settings, activeFileId, theme, toggleTheme } = useAppContext();
   const router = useRouter();
@@ -165,6 +196,9 @@ export default function PdfTranslator() {
   const [autoTranslate, setAutoTranslate] = useState<boolean>(false);
   const [isPreTranslating, setIsPreTranslating] = useState<boolean>(false);
   const [translationCache, setTranslationCache] = useState<Record<number, string>>({});
+  
+  // 双语对齐映射缓存 (BILINGUAL_MAP)
+  const [bilingualMapCache, setBilingualMapCache] = useState<Record<number, Array<{ zh: string; en: string }>>>({});
 
   // OCR state
   const [isOcrLoading, setIsOcrLoading] = useState<boolean>(false);
@@ -197,6 +231,8 @@ export default function PdfTranslator() {
     top: number;
     left: number;
     text: string;
+    isClipped?: boolean;
+    clipId?: string;
   } | null>(null);
 
   // AI Explain Modal state (深度解释与追问)
@@ -225,11 +261,11 @@ export default function PdfTranslator() {
     let rafId: number;
     const tick = () => {
       setDisplayedText((prev) => {
-        const target = fullTextRef.current.replace(/<think>[\s\S]*?(<\/think>|$)/g, '').trimStart();
-        if (prev.length < target.length) {
-          const diff = target.length - prev.length;
+        const { cleanMarkdown } = parseTranslationOutput(fullTextRef.current);
+        if (prev.length < cleanMarkdown.length) {
+          const diff = cleanMarkdown.length - prev.length;
           const charsToAdd = Math.max(1, Math.ceil(diff / 4));
-          return prev + target.slice(prev.length, prev.length + charsToAdd);
+          return prev + cleanMarkdown.slice(prev.length, prev.length + charsToAdd);
         }
         return prev;
       });
@@ -271,9 +307,14 @@ export default function PdfTranslator() {
         setPageAnimKey(initialPage);
 
         if (record.translations && record.translations[initialPage]) {
-          fullTextRef.current = record.translations[initialPage];
-          setTranslatedText(record.translations[initialPage]);
-          setDisplayedText(record.translations[initialPage]);
+          const raw = record.translations[initialPage];
+          fullTextRef.current = raw;
+          const { cleanMarkdown, alignmentMap } = parseTranslationOutput(raw);
+          setTranslatedText(cleanMarkdown);
+          setDisplayedText(cleanMarkdown);
+          if (alignmentMap.length > 0) {
+            setBilingualMapCache(prev => ({ ...prev, [initialPage]: alignmentMap }));
+          }
         }
 
         updateHistoryProgress(activeFileId, {
@@ -333,9 +374,14 @@ export default function PdfTranslator() {
     }
 
     if (translationCache[pageNumber]) {
-      fullTextRef.current = translationCache[pageNumber];
-      setTranslatedText(translationCache[pageNumber]);
-      setDisplayedText(translationCache[pageNumber]);
+      const raw = translationCache[pageNumber];
+      fullTextRef.current = raw;
+      const { cleanMarkdown, alignmentMap } = parseTranslationOutput(raw);
+      setTranslatedText(cleanMarkdown);
+      setDisplayedText(cleanMarkdown);
+      if (alignmentMap.length > 0) {
+        setBilingualMapCache(prev => ({ ...prev, [pageNumber]: alignmentMap }));
+      }
     } else {
       fullTextRef.current = '';
       setTranslatedText('');
@@ -440,26 +486,30 @@ export default function PdfTranslator() {
       const reader = response.body.getReader();
       const decoder = new TextDecoder('utf-8');
       let done = false;
-      let currentText = '';
+      let currentRawText = '';
 
       while (!done) {
         const { value, done: readerDone } = await reader.read();
         done = readerDone;
         if (value) {
           const chunk = decoder.decode(value, { stream: true });
-          currentText += chunk;
+          currentRawText += chunk;
           if (currentPageRef.current === targetPage) {
-            fullTextRef.current = currentText; 
+            fullTextRef.current = currentRawText;
           }
         }
       }
 
-      const finalCleanText = currentText.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+      const { cleanMarkdown, alignmentMap } = parseTranslationOutput(currentRawText);
 
       if (currentPageRef.current === targetPage) {
-        setTranslatedText(finalCleanText);
+        setTranslatedText(cleanMarkdown);
+        setDisplayedText(cleanMarkdown);
+        if (alignmentMap.length > 0) {
+          setBilingualMapCache(prev => ({ ...prev, [targetPage]: alignmentMap }));
+        }
       }
-      setTranslationCache(prev => ({ ...prev, [targetPage]: finalCleanText }));
+      setTranslationCache(prev => ({ ...prev, [targetPage]: currentRawText }));
     } catch (err: any) {
       if (err.name === 'AbortError') return;
       console.error(err);
@@ -635,8 +685,7 @@ export default function PdfTranslator() {
         if (value) fullNextText += decoder.decode(value, { stream: true });
       }
 
-      const finalCleanText = fullNextText.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
-      setTranslationCache(prev => ({ ...prev, [nextPage]: finalCleanText }));
+      setTranslationCache(prev => ({ ...prev, [nextPage]: fullNextText }));
     } catch (err) {
       console.error("Pre-translation error:", err);
     } finally {
@@ -703,7 +752,7 @@ export default function PdfTranslator() {
     };
   }, [isResizing]);
 
-  // === 需求1: 语义级精准词对词 / 句对句划词高亮 (Semantic Alignment) ===
+  // === 核心需求1: 基于大模型双向对齐映射的 100% 精确语义高亮 ===
   const triggerExactHighlightForSelection = (selectedText: string) => {
     if (!selectedText.trim() || !pdfWrapperRef.current || pdfTextItems.length === 0) return;
 
@@ -711,7 +760,7 @@ export default function PdfTranslator() {
       clearTimeout(highlightTimerRef.current);
     }
 
-    const currentDocText = displayedText || translationCache[pageNumber] || '';
+    const currentDocText = displayedText || '';
     if (!currentDocText) return;
 
     const origWidth = pdfOriginalView[2] || 600;
@@ -723,45 +772,69 @@ export default function PdfTranslator() {
     if (validItems.length === 0) return;
 
     let matchedItems: any[] = [];
+    const queryZh = selectedText.trim();
 
-    // 1. 专有名词与英文字符优先精准全词匹配
-    const cleanQuery = selectedText.trim().toLowerCase();
-    const hasEnglishLetters = /[a-zA-Z]{2,}/.test(cleanQuery);
+    // 1. 优先从大模型输出的 BILINGUAL_MAP 精准映射表中匹配英文原句
+    const currentMap = bilingualMapCache[pageNumber] || [];
+    let matchedEnSentence = '';
 
-    if (hasEnglishLetters) {
-      // 提取选中文本中的英文单词 (例如 "Barry Ross", "Ross & Ross International")
-      const words = cleanQuery.match(/[a-zA-Z0-9'-]+/g) || [];
-      const directMatches = validItems.filter(item => {
-        const itemStr = (item.str || '').toLowerCase();
-        return words.some(w => w.length >= 2 && (itemStr.includes(w) || w.includes(itemStr)));
-      });
-      if (directMatches.length > 0) {
-        matchedItems = directMatches;
+    for (const entry of currentMap) {
+      if (entry.zh && entry.en && (entry.zh.includes(queryZh) || queryZh.includes(entry.zh))) {
+        matchedEnSentence = entry.en;
+        break;
       }
     }
 
-    // 2. 语义级自然句双向切分与对齐
+    if (matchedEnSentence) {
+      const cleanEnLower = matchedEnSentence.toLowerCase();
+      const enWords = cleanEnLower.match(/[a-zA-Z0-9'-]+/g) || [];
+      const foundItems = validItems.filter(item => {
+        const itemStr = (item.str || '').toLowerCase().trim();
+        if (!itemStr) return false;
+        return cleanEnLower.includes(itemStr) || enWords.some(w => w.length >= 3 && itemStr.includes(w));
+      });
+
+      if (foundItems.length > 0) {
+        matchedItems = foundItems;
+      }
+    }
+
+    // 2. 若无 map 命中，专有名词与英文字符优先精准全词匹配
+    if (matchedItems.length === 0) {
+      const cleanQuery = queryZh.toLowerCase();
+      const hasEnglishLetters = /[a-zA-Z]{2,}/.test(cleanQuery);
+
+      if (hasEnglishLetters) {
+        const words = cleanQuery.match(/[a-zA-Z0-9'-]+/g) || [];
+        const directMatches = validItems.filter(item => {
+          const itemStr = (item.str || '').toLowerCase();
+          return words.some(w => w.length >= 2 && (itemStr.includes(w) || w.includes(itemStr)));
+        });
+        if (directMatches.length > 0) {
+          matchedItems = directMatches;
+        }
+      }
+    }
+
+    // 3. 增强的自然句语义切分对齐
     if (matchedItems.length === 0) {
       const zhSentences = splitSentences(currentDocText, true);
       const enRawText = validItems.map(item => item.str).join(' ');
       const enSentences = splitSentences(enRawText, false);
 
-      // 找到选中文本所在的中文句子索引
       let targetZhIndex = -1;
       for (let i = 0; i < zhSentences.length; i++) {
-        if (zhSentences[i].text.includes(selectedText.trim()) || selectedText.includes(zhSentences[i].text)) {
+        if (zhSentences[i].text.includes(queryZh) || queryZh.includes(zhSentences[i].text)) {
           targetZhIndex = i;
           break;
         }
       }
 
       if (targetZhIndex >= 0 && enSentences.length > 0) {
-        // 根据句子相对比例映射到对应的英文自然句
         const ratio = targetZhIndex / Math.max(1, zhSentences.length);
         const mappedEnIndex = Math.min(enSentences.length - 1, Math.floor(ratio * enSentences.length));
         const targetEnSentence = enSentences[mappedEnIndex];
 
-        // 找到该英文句子在 validItems 中的起止 items
         let enCharCount = 0;
         const matchedEnItems: any[] = [];
         for (const item of validItems) {
@@ -780,12 +853,12 @@ export default function PdfTranslator() {
       }
     }
 
-    // 3. 兜底策略：按字符百分比映射
+    // 4. 兜底策略：按字符百分比映射
     if (matchedItems.length === 0) {
-      const index = currentDocText.indexOf(selectedText);
+      const index = currentDocText.indexOf(queryZh);
       const totalLen = Math.max(1, currentDocText.length);
       const startRatio = index >= 0 ? index / totalLen : 0.1;
-      const endRatio = index >= 0 ? (index + selectedText.length) / totalLen : startRatio + 0.1;
+      const endRatio = index >= 0 ? (index + queryZh.length) / totalLen : startRatio + 0.1;
 
       const startIndex = Math.max(0, Math.floor(startRatio * validItems.length));
       const endIndex = Math.min(validItems.length, Math.max(startIndex + 1, Math.ceil(endRatio * validItems.length)));
@@ -828,7 +901,6 @@ export default function PdfTranslator() {
   const handleMarkdownSelection = () => {
     const selection = window.getSelection();
     if (!selection || selection.isCollapsed || !selection.toString().trim()) {
-      setFloatingToolbar(null);
       return;
     }
 
@@ -841,14 +913,19 @@ export default function PdfTranslator() {
     const range = selection.getRangeAt(0);
     const rect = range.getBoundingClientRect();
 
+    // 检查该划选文字是否已在剪藏中
+    const existingClip = clips.find(c => c.pageNumber === pageNumber && (c.text.includes(text) || text.includes(c.text)));
+
     setFloatingToolbar({
       visible: true,
       top: rect.top,
       left: rect.left + rect.width / 2,
       text,
+      isClipped: !!existingClip,
+      clipId: existingClip?.id,
     });
 
-    // 触发语义级精准词对词高亮
+    // 触发语义级精准高亮
     triggerExactHighlightForSelection(text);
   };
 
@@ -858,7 +935,8 @@ export default function PdfTranslator() {
       if (
         target.closest(`.${styles.floatingToolbar}`) || 
         target.closest(`.${styles.explainCardModal}`) ||
-        target.closest(`.${styles.clipsSidebarToggle}`)
+        target.closest(`.${styles.clipsSidebarToggle}`) ||
+        target.closest(`.${styles.clippedTextSpan}`)
       ) {
         return;
       }
@@ -876,6 +954,13 @@ export default function PdfTranslator() {
   const handleAddClip = async () => {
     if (!floatingToolbar || !floatingToolbar.text || !activeFileId) return;
     const textToClip = floatingToolbar.text;
+
+    // 如果已剪藏则执行取消剪藏
+    if (floatingToolbar.isClipped && floatingToolbar.clipId) {
+      await handleDeleteClip(floatingToolbar.clipId);
+      setFloatingToolbar(prev => prev ? { ...prev, isClipped: false, clipId: undefined } : null);
+      return;
+    }
 
     const selection = window.getSelection();
     let startRect = { top: floatingToolbar.top, left: floatingToolbar.left, width: 120, height: 30 };
@@ -923,13 +1008,16 @@ export default function PdfTranslator() {
 
     await addHistoryClip(activeFileId, newClip);
     setClips(prev => [newClip, ...prev.filter(c => c.id !== newClip.id)]);
-    setFloatingToolbar(null);
+    setFloatingToolbar(prev => prev ? { ...prev, isClipped: true, clipId: newClip.id } : null);
   };
 
   const handleDeleteClip = async (clipId: string) => {
     if (!activeFileId) return;
     await deleteHistoryClip(activeFileId, clipId);
     setClips(prev => prev.filter(c => c.id !== clipId));
+    if (floatingToolbar && floatingToolbar.clipId === clipId) {
+      setFloatingToolbar(prev => prev ? { ...prev, isClipped: false, clipId: undefined } : null);
+    }
   };
 
   const handleCopyClip = (text: string) => {
@@ -964,6 +1052,21 @@ export default function PdfTranslator() {
     URL.revokeObjectURL(link.href);
   };
 
+  // 点击已剪藏的波浪线下划线区域触发悬浮微岛
+  const handleClippedSpanClick = (e: React.MouseEvent, clip: ClipItem) => {
+    e.stopPropagation();
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    setFloatingToolbar({
+      visible: true,
+      top: rect.top,
+      left: rect.left + rect.width / 2,
+      text: clip.text,
+      isClipped: true,
+      clipId: clip.id,
+    });
+    triggerExactHighlightForSelection(clip.text);
+  };
+
   // AI 深度解释与多轮追问
   const handleOpenExplain = async () => {
     if (!floatingToolbar || !floatingToolbar.text) return;
@@ -982,7 +1085,7 @@ export default function PdfTranslator() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           selectedText: textToExplain,
-          contextText: displayedText || translationCache[pageNumber] || '',
+          contextText: displayedText || '',
           apiKey: settings.apiKey,
           baseUrl: settings.baseUrl,
           model: settings.model,
@@ -1036,7 +1139,7 @@ export default function PdfTranslator() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           selectedText: explainTargetText,
-          contextText: displayedText || translationCache[pageNumber] || '',
+          contextText: displayedText || '',
           question,
           history: newHistory,
           apiKey: settings.apiKey,
@@ -1078,8 +1181,9 @@ export default function PdfTranslator() {
     const sortedPages = Object.keys(translationCache).map(Number).sort((a, b) => a - b);
     
     sortedPages.forEach(page => {
+      const { cleanMarkdown } = parseTranslationOutput(translationCache[page]);
       mdContent += `### 第 ${page} 页\n\n`;
-      mdContent += `${translationCache[page]}\n\n---\n\n`;
+      mdContent += `${cleanMarkdown}\n\n---\n\n`;
     });
     
     const minPage = sortedPages[0];
@@ -1099,6 +1203,9 @@ export default function PdfTranslator() {
 
   const [fullWidthReading, setFullWidthReading] = useState<boolean>(false);
 
+  // 获取当前页面的剪藏条目
+  const currentPageClips = clips.filter(c => c.pageNumber === pageNumber);
+
   return (
     <div className={styles.container} ref={containerRef}>
       {!file && (
@@ -1116,22 +1223,26 @@ export default function PdfTranslator() {
         </div>
       )}
 
-      {/* 划词悬浮微岛工具栏 (Squircle 黄金比例设计，彻底解决图1圆角冲突) */}
+      {/* 划词悬浮微岛工具栏 (Squircle 黄金比例设计，彻底解决图1圆角与剪藏状态联动) */}
       {floatingToolbar && floatingToolbar.visible && (
         <div 
           className={styles.floatingToolbar} 
           style={{ top: `${floatingToolbar.top}px`, left: `${floatingToolbar.left}px` }}
           onMouseDown={e => e.stopPropagation()}
         >
-          <button className={`${styles.capsuleBtn} ${styles.capsuleBtnPrimary}`} onClick={handleAddClip}>
-            <BookmarkPlus size={13} />
-            <span>剪藏</span>
+          <button 
+            className={`${styles.capsuleBtn} ${styles.capsuleBtnPrimary}`} 
+            onClick={handleAddClip}
+            data-tooltip={floatingToolbar.isClipped ? '已剪藏（点击取消）' : '剪藏选中文本'}
+          >
+            {floatingToolbar.isClipped ? <Check size={13} /> : <BookmarkPlus size={13} />}
+            <span>{floatingToolbar.isClipped ? '已剪藏' : '剪藏'}</span>
           </button>
-          <button className={styles.capsuleBtn} onClick={handleOpenExplain}>
+          <button className={styles.capsuleBtn} onClick={handleOpenExplain} data-tooltip="AI 结合上下文深度解析">
             <Sparkles size={13} />
             <span>解释</span>
           </button>
-          <button className={styles.capsuleBtn} onClick={() => { navigator.clipboard.writeText(floatingToolbar.text); setFloatingToolbar(null); }}>
+          <button className={styles.capsuleBtn} onClick={() => { navigator.clipboard.writeText(floatingToolbar.text); setFloatingToolbar(null); }} data-tooltip="复制到剪贴板">
             <Copy size={13} />
             <span>复制</span>
           </button>
@@ -1252,37 +1363,36 @@ export default function PdfTranslator() {
             </div>
           </div>
 
+          {/* 需求3: 移除销毁性 key，保持 Document 单例，彻底消除翻页白屏闪烁 */}
           <div className={styles.pdfWrapper} ref={pdfWrapperRef}>
             {file && (
-              <div key={`pdf-page-${pageAnimKey}`} className={styles.pageFadeIn}>
-                <Document
-                  file={file}
-                  onLoadSuccess={onDocumentLoadSuccess}
-                  loading={<div className={styles.loadingOverlay}><div className={styles.spinner} /></div>}
-                >
-                  <div style={{ position: 'relative' }}>
-                    <Page 
-                      pageNumber={pageNumber} 
-                      width={pdfRenderWidth * zoomScale} 
-                      renderTextLayer={true}
-                      renderAnnotationLayer={false}
+              <Document
+                file={file}
+                onLoadSuccess={onDocumentLoadSuccess}
+                loading={<div className={styles.loadingOverlay}><div className={styles.spinner} /></div>}
+              >
+                <div style={{ position: 'relative' }}>
+                  <Page 
+                    pageNumber={pageNumber} 
+                    width={pdfRenderWidth * zoomScale} 
+                    renderTextLayer={true}
+                    renderAnnotationLayer={false}
+                  />
+                  {/* 语义级精准词对词行内划词荧光高亮 */}
+                  {exactHighlightSpans.map((rect, idx) => (
+                    <span 
+                      key={idx}
+                      className={styles.pdfExactHighlightSpan}
+                      style={{
+                        left: `${rect.left}px`,
+                        top: `${rect.top}px`,
+                        width: `${rect.width}px`,
+                        height: `${rect.height}px`,
+                      }}
                     />
-                    {/* 语义级精准词对词行内划词荧光高亮 */}
-                    {exactHighlightSpans.map((rect, idx) => (
-                      <span 
-                        key={idx}
-                        className={styles.pdfExactHighlightSpan}
-                        style={{
-                          left: `${rect.left}px`,
-                          top: `${rect.top}px`,
-                          width: `${rect.width}px`,
-                          height: `${rect.height}px`,
-                        }}
-                      />
-                    ))}
-                  </div>
-                </Document>
-              </div>
+                  ))}
+                </div>
+              </Document>
             )}
           </div>
         </div>
@@ -1437,7 +1547,7 @@ export default function PdfTranslator() {
 
         {/* 平级分栏工作区与右侧小三角伸缩手柄 */}
         <div className={styles.rightPaneBody}>
-          {/* 小三角伸缩手柄（图1红圈位置） */}
+          {/* 小三角伸缩手柄 */}
           <button
             ref={toggleBtnRef}
             type="button"
@@ -1506,7 +1616,45 @@ export default function PdfTranslator() {
                   transition: 'all 0.25s ease'
                 }}
               >
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                {/* 需求2: 自定义 Markdown 渲染，将当前页已剪藏的句子以波浪线和高亮标识 */}
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  components={{
+                    p: ({ node, children, ...props }) => {
+                      return (
+                        <p {...props}>
+                          {React.Children.map(children, child => {
+                            if (typeof child === 'string' && currentPageClips.length > 0) {
+                              // 检查文本是否包含已剪藏片段
+                              for (const clip of currentPageClips) {
+                                if (clip.text && child.includes(clip.text)) {
+                                  const parts = child.split(clip.text);
+                                  return parts.reduce((acc: any[], part: string, i: number) => {
+                                    if (i > 0) {
+                                      acc.push(
+                                        <span
+                                          key={`clip-${clip.id}-${i}`}
+                                          className={styles.clippedTextSpan}
+                                          onClick={(e) => handleClippedSpanClick(e, clip)}
+                                          data-tooltip="已剪藏（点击唤起微岛）"
+                                        >
+                                          {clip.text}
+                                        </span>
+                                      );
+                                    }
+                                    acc.push(part);
+                                    return acc;
+                                  }, []);
+                                }
+                              }
+                            }
+                            return child;
+                          })}
+                        </p>
+                      );
+                    },
+                  }}
+                >
                   {displayedText ? displayedText : '待翻译或翻页中...'}
                 </ReactMarkdown>
                 {isTranslating && <span className={styles.cursorPulse}> ▍</span>}
@@ -1514,7 +1662,7 @@ export default function PdfTranslator() {
             )}
           </div>
 
-          {/* 平级并排剪藏栏 (无黑遮罩，与译文并排展示) */}
+          {/* 平级并排剪藏栏 (无黑遮罩，固定 Header 防穿透) */}
           <div className={`${styles.inlineClipsSidebar} ${!isClipsDrawerOpen ? styles.inlineClipsSidebarClosed : ''}`}>
             <div className={styles.clipsHeader}>
               <h3 style={{ fontSize: '13.5px', display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -1550,7 +1698,7 @@ export default function PdfTranslator() {
               </div>
             </div>
 
-            <div className={styles.clipsList} style={{ padding: '14px' }}>
+            <div className={styles.clipsList}>
               {clips.length === 0 ? (
                 <div style={{ textAlign: 'center', padding: '40px 10px', color: 'var(--text-muted)', fontSize: '13px' }}>
                   <BookmarkPlus size={24} style={{ margin: '0 auto 8px', opacity: 0.4 }} />
@@ -1561,13 +1709,14 @@ export default function PdfTranslator() {
                 clips.map(clip => (
                   <div key={clip.id} className={styles.clipCard} style={{ padding: '12px' }}>
                     <div className={styles.clipMeta}>
+                      {/* 需求5: 精简 Tooltip 文案，去除多余开发括号 */}
                       <span 
                         style={{ cursor: 'pointer', color: 'var(--primary)', fontWeight: 600, fontSize: '12px', display: 'inline-flex', alignItems: 'center', gap: '3px' }}
                         onClick={() => {
                           setPageNumber(clip.pageNumber);
                           triggerExactHighlightForSelection(clip.text);
                         }}
-                        data-tooltip="点击跳转至此页（侧栏保持常驻）"
+                        data-tooltip={`跳转至第 ${clip.pageNumber} 页`}
                       >
                         第 {clip.pageNumber} 页 <ExternalLink size={11} />
                       </span>
