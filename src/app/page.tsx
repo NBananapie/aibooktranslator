@@ -23,7 +23,7 @@ import {
 
 const PROVIDER_PRESETS: { label: string; baseUrl: string; model: string; provider: 'openai' | 'gemini' | 'custom' }[] = [
   { label: 'MiniMax', baseUrl: 'https://api.minimax.chat/v1', model: 'MiniMax-M2.7-highspeed', provider: 'openai' },
-  { label: 'Google Gemini (原生 3.7)', baseUrl: 'https://generativelanguage.googleapis.com', model: 'gemini-3.7-flash', provider: 'gemini' },
+  { label: 'Google Gemini (2.5 Flash 推荐)', baseUrl: 'https://generativelanguage.googleapis.com', model: 'gemini-2.5-flash', provider: 'gemini' },
   { label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', provider: 'openai' },
 ];
 
@@ -410,12 +410,55 @@ export default function Home() {
             </div>
             
             <div className={styles.formGroup}>
-              <label>模型名称 (Model)</label>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <label>模型名称 (Model)</label>
+                {/* 快捷推荐模型 */}
+                <div style={{ display: 'flex', gap: '4px' }}>
+                  {(formSettings.provider === 'gemini' || formSettings.baseUrl.includes('googleapis.com')) ? (
+                    <>
+                      <button
+                        type="button"
+                        className={styles.btnSecondary}
+                        style={{ padding: '2px 6px', fontSize: '10px' }}
+                        onClick={() => setFormSettings({ ...formSettings, model: 'gemini-2.5-flash' })}
+                      >
+                        gemini-2.5-flash (推荐)
+                      </button>
+                      <button
+                        type="button"
+                        className={styles.btnSecondary}
+                        style={{ padding: '2px 6px', fontSize: '10px' }}
+                        onClick={() => setFormSettings({ ...formSettings, model: 'gemini-2.0-flash-lite' })}
+                      >
+                        gemini-2.0-flash-lite
+                      </button>
+                    </>
+                  ) : formSettings.baseUrl.includes('minimax') ? (
+                    <button
+                      type="button"
+                      className={styles.btnSecondary}
+                      style={{ padding: '2px 6px', fontSize: '10px' }}
+                      onClick={() => setFormSettings({ ...formSettings, model: 'MiniMax-M2.7-highspeed' })}
+                    >
+                      MiniMax-M2.7-highspeed
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className={styles.btnSecondary}
+                      style={{ padding: '2px 6px', fontSize: '10px' }}
+                      onClick={() => setFormSettings({ ...formSettings, model: 'gpt-4o-mini' })}
+                    >
+                      gpt-4o-mini
+                    </button>
+                  )}
+                </div>
+              </div>
               <input 
                 type="text" 
                 value={formSettings.model} 
                 onChange={e => setFormSettings({...formSettings, model: e.target.value})}
-                placeholder="例如 gemini-3.7-flash 或 MiniMax-M2.7-highspeed"
+                placeholder="例如 gemini-2.5-flash 或 MiniMax-M2.7-highspeed"
               />
             </div>
 
@@ -474,7 +517,23 @@ export default function Home() {
             </div>
 
             <div className={styles.formGroup}>
-              <label>PaddleOCR API Endpoint (可选自定义)</label>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <label>PaddleOCR API Endpoint (可选自定义)</label>
+                <button 
+                  type="button" 
+                  className={styles.btnSecondary} 
+                  style={{ padding: '2px 6px', fontSize: '11px', display: 'inline-flex', alignItems: 'center', gap: '3px' }}
+                  onClick={() => setFormSettings({
+                    ...formSettings,
+                    ocr: {
+                      ...(formSettings.ocr || DEFAULT_OCR_SETTINGS),
+                      apiUrl: DEFAULT_OCR_SETTINGS.apiUrl
+                    }
+                  })}
+                >
+                  <RotateCcw size={10} /> 恢复默认地址
+                </button>
+              </div>
               <input 
                 type="text" 
                 value={formSettings.ocr?.apiUrl || ''} 
@@ -487,6 +546,7 @@ export default function Home() {
                 })}
                 placeholder="https://paddleocr.aistudio-app.com/api/v2/ocr/jobs"
               />
+              <p style={hintStyle}>默认使用百度飞桨 AIStudio App v2 异步作业地址。原生 PDF 文本页无需开启 OCR。</p>
             </div>
 
             {/* 系统提示词 */}
