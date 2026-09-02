@@ -5,6 +5,21 @@ import { useRouter } from 'next/navigation';
 import { useAppContext, AppSettings, DEFAULT_SETTINGS, DEFAULT_OCR_SETTINGS } from '@/context/AppContext';
 import { getAllHistoryMetadata, saveHistoryRecord, HistoryRecord, deleteHistoryRecord, updateHistoryFilename } from '@/lib/db';
 import styles from './page.module.css';
+import {
+  Sun,
+  Moon,
+  Settings as SettingsIcon,
+  UploadCloud,
+  FileText,
+  Pencil,
+  Trash2,
+  ScanText,
+  RotateCcw,
+  Globe,
+  Sparkles,
+  Check,
+  X
+} from 'lucide-react';
 
 const PROVIDER_PRESETS: { label: string; baseUrl: string; model: string; provider: 'openai' | 'gemini' | 'custom' }[] = [
   { label: 'MiniMax', baseUrl: 'https://api.minimax.chat/v1', model: 'MiniMax-M2.7-highspeed', provider: 'openai' },
@@ -27,7 +42,7 @@ function ProgressRing({ percent, size = 48, strokeWidth = 4 }: { percent: number
   const offset = circumference - (validPercent / 100) * circumference;
 
   return (
-    <div className={styles.progressRingWrapper} style={{ width: size, height: size }} title={`阅读进度: ${validPercent}%`}>
+    <div className={styles.progressRingWrapper} style={{ width: size, height: size }} data-tooltip={`阅读进度: ${validPercent}%`}>
       <svg className={styles.progressRingSvg} width={size} height={size}>
         <circle
           className={styles.progressRingBg}
@@ -201,12 +216,19 @@ export default function Home() {
             type="button" 
             className={styles.themeToggleBtn} 
             onClick={toggleTheme}
-            title="切换深色/浅色模式"
+            data-tooltip="切换深色/浅色模式"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
           >
-            {theme === 'dark' ? '☀️ 浅色模式' : '🌙 深色模式'}
+            {theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
+            <span>{theme === 'dark' ? '浅色模式' : '深色模式'}</span>
           </button>
-          <button className={styles.btn} onClick={() => setIsSettingsOpen(true)}>
-            ⚙️ 引擎设置
+          <button 
+            className={styles.btn} 
+            onClick={() => setIsSettingsOpen(true)}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+          >
+            <SettingsIcon size={15} />
+            <span>引擎设置</span>
           </button>
         </div>
       </header>
@@ -227,12 +249,14 @@ export default function Home() {
             onChange={handleFileInput} 
             style={{ display: 'none' }}
           />
-          <div className={styles.uploadIcon}>📄</div>
+          <div className={styles.uploadIcon}>
+            <UploadCloud size={38} style={{ color: 'var(--primary)', strokeWidth: 1.8 }} />
+          </div>
           <div className={styles.uploadTitle}>点击或拖拽上传 PDF 文档</div>
           <div className={styles.uploadDesc}>支持双栏流式翻译、百度飞桨多模态 OCR、智能预翻译与带署名 Markdown 导出</div>
         </div>
 
-        {/* History Section - 需求4: 历史翻译归档 改为 已上传 */}
+        {/* History Section */}
         <div className={styles.historySection}>
           <h2>已上传</h2>
           {history.length === 0 ? (
@@ -242,7 +266,6 @@ export default function Home() {
               {history.map(item => {
                 const translatedCount = Object.keys(item.translations || {}).length;
                 const total = item.totalPages || 0;
-                // 计算进度百分比：优先按照已翻译页数/总页数计算，若已有阅读页码亦可综合展现
                 const percent = total > 0 ? Math.round((translatedCount / total) * 100) : (translatedCount > 0 ? 100 : 0);
 
                 return (
@@ -259,32 +282,33 @@ export default function Home() {
                             autoFocus
                             className={styles.cardRenameInput}
                           />
-                          <button className={styles.btn} style={{ padding: '3px 8px', fontSize: '11px' }} onClick={e => saveCardName(e, item.id)}>
-                            保存
+                          <button className={styles.btn} style={{ padding: '3px 8px', fontSize: '11px', display: 'inline-flex', alignItems: 'center', gap: '3px' }} onClick={e => saveCardName(e, item.id)}>
+                            <Check size={11} /> 保存
                           </button>
-                          <button className={styles.btnSecondary} style={{ padding: '3px 8px', fontSize: '11px' }} onClick={e => { e.stopPropagation(); setEditingCardId(null); }}>
-                            取消
+                          <button className={styles.btnSecondary} style={{ padding: '3px 8px', fontSize: '11px', display: 'inline-flex', alignItems: 'center', gap: '3px' }} onClick={e => { e.stopPropagation(); setEditingCardId(null); }}>
+                            <X size={11} /> 取消
                           </button>
                         </div>
                       ) : (
                         <div className={styles.cardTitleRow}>
-                          <h3 title={item.filename}>{item.filename}</h3>
+                          <h3 data-tooltip={item.filename}>{item.filename}</h3>
                           <button
                             className={styles.iconBtn}
                             onClick={e => startEditingCard(e, item)}
-                            title="修改文件名"
+                            data-tooltip="修改文件名"
+                            style={{ padding: '3px' }}
                           >
-                            ✏️
+                            <Pencil size={12} />
                           </button>
                         </div>
                       )}
 
-                      <button className={styles.deleteBtn} onClick={(e) => deleteHistory(e, item.id)} title="删除此记录">
-                        🗑️
+                      <button className={styles.deleteBtn} onClick={(e) => deleteHistory(e, item.id)} data-tooltip="删除此记录">
+                        <Trash2 size={13} />
                       </button>
                     </div>
 
-                    {/* 卡片主体：需求5 进度圆环与上次阅读时间 */}
+                    {/* 卡片主体：进度圆环与上次阅读时间 */}
                     <div className={styles.cardBody}>
                       <ProgressRing percent={percent} size={48} strokeWidth={4} />
                       <div className={styles.cardProgressMeta}>
@@ -298,13 +322,14 @@ export default function Home() {
                             </span>
                           )}
                         </div>
-                        <div className={styles.lastReadTimeRow} title={`上次阅读时间: ${new Date(item.lastReadTime || item.date).toLocaleString()}`}>
+
+                        <div className={styles.lastReadTimeRow} data-tooltip={`上次阅读时间: ${new Date(item.lastReadTime || item.date).toLocaleString()}`}>
                           <span>上次阅读: {formatTime(item.lastReadTime || item.date)}</span>
                         </div>
                       </div>
                     </div>
 
-                    {/* 卡片底部：需求6 独立一行 创建时间 */}
+                    {/* 卡片底部：独立一行 创建时间 */}
                     <div className={styles.cardFooter}>
                       <span>创建时间: {new Date(item.date).toLocaleDateString()} {new Date(item.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                     </div>
@@ -320,10 +345,19 @@ export default function Home() {
       {isSettingsOpen && (
         <div className={styles.modalOverlay} onClick={() => setIsSettingsOpen(false)}>
           <div className={styles.modalContent} onClick={e => e.stopPropagation()}>
-            <h2>引擎与服务商配置</h2>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <h2 style={{ fontSize: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <SettingsIcon size={18} style={{ color: 'var(--primary)' }} /> 引擎与服务商配置
+              </h2>
+              <button className={styles.iconBtn} onClick={() => setIsSettingsOpen(false)} data-tooltip="关闭">
+                <X size={16} />
+              </button>
+            </div>
             
             {/* LLM 翻译配置板块 */}
-            <div className={styles.settingsSectionTitle}>AI 翻译大模型配置</div>
+            <div className={styles.settingsSectionTitle} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <Sparkles size={14} style={{ color: 'var(--primary)' }} /> AI 翻译大模型配置
+            </div>
             <div className={styles.formGroup}>
               <label>选择服务商预设</label>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
@@ -385,9 +419,11 @@ export default function Home() {
               />
             </div>
 
-            {/* 需求1: 百度飞桨 PaddleOCR 配置专区 */}
+            {/* 百度飞桨 PaddleOCR 配置专区 */}
             <div className={styles.settingsDivider} />
-            <div className={styles.settingsSectionTitle}>🔍 百度飞桨 PaddleOCR 识别配置 (AI Studio)</div>
+            <div className={styles.settingsSectionTitle} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <ScanText size={14} style={{ color: 'var(--primary)' }} /> 百度飞桨 PaddleOCR 识别配置 (AI Studio)
+            </div>
             
             <div className={styles.formGroup}>
               <label>OCR 模型选择</label>
@@ -461,11 +497,11 @@ export default function Home() {
                 <button 
                   type="button" 
                   className={styles.btnSecondary} 
-                  style={{ padding: '3px 8px', fontSize: '11px' }}
+                  style={{ padding: '3px 8px', fontSize: '11px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
                   onClick={() => setFormSettings({...formSettings, customPrompt: DEFAULT_SETTINGS.customPrompt})}
-                  title="重置为推荐出版级排版提示词"
+                  data-tooltip="重置为推荐出版级排版提示词"
                 >
-                  ↺ 恢复推荐提示词
+                  <RotateCcw size={11} /> 恢复推荐提示词
                 </button>
               </div>
               <textarea 
@@ -482,9 +518,9 @@ export default function Home() {
                 rel="noopener noreferrer" 
                 className={styles.btnSecondary}
                 style={{ marginRight: 'auto', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
-                title="访问 JustGanIt 探索更多 AI 工具"
+                data-tooltip="访问 JustGanIt 探索更多 AI 工具"
               >
-                🌐 联系开发者 (JustGanIt)
+                <Globe size={14} /> 联系开发者 (JustGanIt)
               </a>
               <button className={styles.btnSecondary} onClick={() => setIsSettingsOpen(false)}>取消</button>
               <button className={styles.btn} onClick={saveSettings}>保存设置</button>

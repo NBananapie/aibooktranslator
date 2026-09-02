@@ -184,3 +184,59 @@ a:hover {
   position: relative !important;
 }
 
+/* === 全局现代毛玻璃微光 Tooltip (彻底淘汰浏览器粗黑框) === */
+[data-tooltip] {
+  position: relative;
+}
+
+[data-tooltip]::before {
+  content: '';
+  position: absolute;
+  bottom: -6px;
+  left: 50%;
+  transform: translateX(-50%) scale(0);
+  border: 5px solid transparent;
+  border-bottom-color: rgba(24, 24, 30, 0.95);
+  pointer-events: none;
+  opacity: 0;
+  transition: all 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+  z-index: 10001;
+}
+
+[data-tooltip]::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: -32px;
+  left: 50%;
+  transform: translateX(-50%) translateY(-3px);
+  padding: 5px 10px;
+  border-radius: 7px;
+  background: rgba(20, 20, 28, 0.96);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  color: #f8fafc;
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1.2;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.55), 0 0 14px var(--primary-glow);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  transition: all 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+  z-index: 10000;
+}
+
+[data-tooltip]:hover::before,
+[data-tooltip]:hover::after {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%) translateY(0);
+}
+
+[data-tooltip]:hover::before {
+  transform: translateX(-50%) scale(1);
+}
+
+

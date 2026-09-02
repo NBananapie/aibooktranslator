@@ -951,23 +951,23 @@
   }
 }
 
-/* === 划词悬浮胶囊工具栏 (Floating Capsule Toolbar) === */
+/* === 划词悬浮微岛工具栏 (Floating Squircle Toolbar) === */
 .floatingToolbar {
   position: fixed;
   z-index: 1000;
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 6px 10px;
+  gap: 3px;
+  padding: 4px;
   background: var(--surface-1);
   border: 1px solid var(--primary-border);
-  border-radius: 9999px;
-  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.5), 0 0 20px var(--primary-glow);
+  border-radius: 12px;
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.5), 0 0 16px var(--primary-glow);
   backdrop-filter: blur(24px);
   -webkit-backdrop-filter: blur(24px);
   transform: translate(-50%, -100%);
-  margin-top: -12px;
-  animation: popInCapsule 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  margin-top: -10px;
+  animation: popInCapsule 0.18s cubic-bezier(0.16, 1, 0.3, 1);
   user-select: none;
 }
 
@@ -986,34 +986,37 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 5px 12px;
-  border-radius: 9999px;
-  background: var(--card-bg);
-  border: 1px solid var(--card-border);
+  padding: 6px 12px;
+  border-radius: 8px;
+  background: transparent;
+  border: 1px solid transparent;
   color: var(--foreground);
   font-size: 12.5px;
-  font-weight: 600;
+  font-weight: 500;
   cursor: pointer;
-  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
   white-space: nowrap;
 }
 
 .capsuleBtn:hover {
-  background: var(--primary);
-  color: #ffffff;
-  border-color: var(--primary);
+  background: var(--primary-surface);
+  color: var(--primary);
+  border-color: var(--primary-border);
   transform: translateY(-1px);
-  box-shadow: 0 3px 10px var(--primary-glow);
 }
 
 .capsuleBtnPrimary {
   background: var(--primary);
-  color: #ffffff;
+  color: #ffffff !important;
   border-color: var(--primary);
+  font-weight: 600;
 }
 
 .capsuleBtnPrimary:hover {
   background: var(--primary-hover);
+  border-color: var(--primary-hover);
+  color: #ffffff !important;
+  box-shadow: 0 2px 8px var(--primary-glow);
 }
 
 /* === 模糊飞入吸入动效 (Ghost Flying Effect) === */
