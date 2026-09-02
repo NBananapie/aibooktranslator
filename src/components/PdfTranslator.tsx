@@ -437,8 +437,11 @@ export default function PdfTranslator() {
     canvas.height = viewport.height;
     const context = canvas.getContext('2d');
     if (!context) throw new Error('Canvas 上下文初始化失败');
+    // 预填纯白背景，防止透明 PDF 页面变黑或 OCR 识别失败
+    context.fillStyle = '#ffffff';
+    context.fillRect(0, 0, canvas.width, canvas.height);
     await (page.render as any)({ canvasContext: context, viewport, canvas }).promise;
-    return canvas.toDataURL('image/jpeg', 0.95);
+    return canvas.toDataURL('image/png');
   };
 
   const executeTranslateText = async (sourceText: string, targetPage: number) => {
