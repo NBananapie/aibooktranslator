@@ -153,7 +153,7 @@ function parseTranslationOutput(rawText: string): {
   let cleanMarkdown = rawText;
   let alignmentMap: Array<{ zh: string; en: string }> = [];
 
-  // 1. 尝试提取 <!-- BILINGUAL_MAP: [...] -->
+  // 1. 尝试提取已完整闭合的 <!-- BILINGUAL_MAP: [...] -->
   const mapMatch = rawText.match(/<!--\s*BILINGUAL_MAP:?\s*([\s\S]*?)-->/i);
   if (mapMatch && mapMatch[1]) {
     try {
@@ -165,10 +165,13 @@ function parseTranslationOutput(rawText: string): {
     } catch (e) {
       // JSON 解析容错
     }
-    cleanMarkdown = rawText.replace(/<!--\s*BILINGUAL_MAP:?[\s\S]*?-->/gi, '').trim();
   }
 
-  // 2. 移除大模型 <think> 思维链标签
+  // 2. 彻底从渲染内容中切除 BILINGUAL_MAP 块：
+  // 无论是正在流式输出末尾中 (未闭合)，还是已输出完毕 (已闭合)，一律不展示在正文中
+  cleanMarkdown = cleanMarkdown.replace(/<!--\s*BILINGUAL_MAP[\s\S]*$/i, '').trim();
+
+  // 3. 移除大模型 <think> 思维链标签 (实时流式过滤)
   cleanMarkdown = cleanMarkdown.replace(/<think>[\s\S]*?(<\/think>|$)/g, '').trim();
 
   return { cleanMarkdown, alignmentMap };
@@ -216,6 +219,7 @@ export default function PdfTranslator() {
     width: number;
     height: number;
   }>>([]);
+  const [activeHighlightZh, setActiveHighlightZh] = useState<string>('');
   const highlightTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   // Clips state (剪藏系统)
@@ -359,6 +363,7 @@ export default function PdfTranslator() {
     setViewMode('translation');
     setFloatingToolbar(null);
     setExactHighlightSpans([]);
+    setActiveHighlightZh('');
     setPageAnimKey(Date.now());
     
     if (abortControllerRef.current) {
@@ -783,6 +788,7 @@ export default function PdfTranslator() {
 
     let matchedItems: any[] = [];
     const queryZh = selectedText.trim();
+    setActiveHighlightZh(queryZh);
 
     // 1. 优先从大模型输出的 BILINGUAL_MAP 精准映射表中匹配英文原句
     const currentMap = bilingualMapCache[pageNumber] || [];
@@ -934,6 +940,32 @@ export default function PdfTranslator() {
     triggerExactHighlightForSelection(text);
   };
 
+  // 从左侧 PDF 划选英文文本，双向反查高亮右侧中文译文
+  const handlePdfSelection = () => {
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed) return;
+    const enText = selection.toString().trim();
+    if (enText.length < 2) return;
+
+    const currentMap = bilingualMapCache[pageNumber] || [];
+    let matchedZh = '';
+    const cleanEn = enText.toLowerCase();
+
+    for (const entry of currentMap) {
+      if (entry.en && entry.zh) {
+        const entryEnLower = entry.en.toLowerCase();
+        if (entryEnLower.includes(cleanEn) || cleanEn.includes(entryEnLower)) {
+          matchedZh = entry.zh;
+          break;
+        }
+      }
+    }
+
+    if (matchedZh) {
+      triggerExactHighlightForSelection(matchedZh);
+    }
+  };
+
   useEffect(() => {
     const handleGlobalMouseDown = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
@@ -941,15 +973,17 @@ export default function PdfTranslator() {
         target.closest(`.${styles.floatingToolbar}`) || 
         target.closest(`.${styles.explainCardModal}`) ||
         target.closest(`.${styles.clipsSidebarToggle}`) ||
-        target.closest(`.${styles.clippedTextSpan}`)
+        target.closest(`.${styles.clippedTextSpan}`) ||
+        target.closest(`.${styles.activeZhHighlightSpan}`)
       ) {
         return;
       }
       const selection = window.getSelection();
       if (!selection || selection.isCollapsed) {
         setFloatingToolbar(null);
-        if (!target.closest(`.${styles.markdownWrapper}`)) {
+        if (!target.closest(`.${styles.markdownWrapper}`) && !target.closest(`.${styles.pdfWrapper}`)) {
           setExactHighlightSpans([]);
+          setActiveHighlightZh('');
         }
       }
     };
@@ -1372,7 +1406,7 @@ export default function PdfTranslator() {
           </div>
 
           {/* 需求3: 移除销毁性 key，保持 Document 单例，彻底消除翻页白屏闪烁 */}
-          <div className={styles.pdfWrapper} ref={pdfWrapperRef}>
+          <div className={styles.pdfWrapper} ref={pdfWrapperRef} onMouseUp={handlePdfSelection}>
             {file && (
               <Document
                 file={file}
@@ -1600,17 +1634,24 @@ export default function PdfTranslator() {
                   lineHeight: isImmersive ? '1.9' : '1.8',
                 }}
               >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', borderBottom: '1px solid var(--glass-border)', paddingBottom: '8px' }}>
-                  <span style={{ fontSize: '13px', color: 'var(--primary)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '5px' }}>
-                    <ScanText size={14} /> 百度飞桨 OCR 识别结果
-                  </span>
-                  <button 
-                    className={styles.btn} 
-                    style={{ padding: '4px 10px', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '5px' }}
-                    onClick={() => executeTranslateText(ocrCache[pageNumber], pageNumber)}
-                  >
-                    <Zap size={13} /> 将此 OCR 内容翻译为中文
-                  </button>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '14px', borderBottom: '1px solid var(--glass-border)', paddingBottom: '10px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontSize: '13.5px', color: 'var(--primary)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <ScanText size={15} /> 百度飞桨 PaddleOCR-VL 结构化识别
+                    </span>
+                    <button 
+                      className={styles.btn} 
+                      style={{ padding: '4px 10px', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '5px' }}
+                      onClick={() => executeTranslateText(ocrCache[pageNumber], pageNumber)}
+                    >
+                      <Zap size={13} /> 将此 OCR 内容翻译为中文
+                    </button>
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', fontSize: '11px', color: 'var(--muted)' }}>
+                    <span className={styles.badge}>多模态版面解析</span>
+                    <span className={styles.badgeSubtle}>复杂表格/公式/分栏识别</span>
+                    <span className={styles.badgeSubtle}>高保真 Markdown 排版还原</span>
+                  </div>
                 </div>
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>
                   {ocrCache[pageNumber]}
@@ -1631,32 +1672,74 @@ export default function PdfTranslator() {
                   remarkPlugins={[remarkGfm]}
                   components={{
                     p: ({ node, children, ...props }) => {
+                      const formatTextSegments = (rawText: string) => {
+                        let segs: React.ReactNode[] = [rawText];
+
+                        // 1. 优先处理已剪藏下划线
+                        if (currentPageClips.length > 0) {
+                          for (const clip of currentPageClips) {
+                            if (!clip.text) continue;
+                            const next: React.ReactNode[] = [];
+                            for (const s of segs) {
+                              if (typeof s === 'string' && s.includes(clip.text)) {
+                                const parts = s.split(clip.text);
+                                for (let i = 0; i < parts.length; i++) {
+                                  if (i > 0) {
+                                    next.push(
+                                      <span
+                                        key={`clip-${clip.id}-${i}`}
+                                        className={styles.clippedTextSpan}
+                                        onClick={(e) => handleClippedSpanClick(e, clip)}
+                                        data-tooltip="已剪藏（点击唤起微岛）"
+                                      >
+                                        {clip.text}
+                                      </span>
+                                    );
+                                  }
+                                  if (parts[i]) next.push(parts[i]);
+                                }
+                              } else {
+                                next.push(s);
+                              }
+                            }
+                            segs = next;
+                          }
+                        }
+
+                        // 2. 处理当前选中的双向对齐高亮段 (activeHighlightZh)
+                        if (activeHighlightZh && activeHighlightZh.length >= 2) {
+                          const next: React.ReactNode[] = [];
+                          for (const s of segs) {
+                            if (typeof s === 'string' && s.includes(activeHighlightZh)) {
+                              const parts = s.split(activeHighlightZh);
+                              for (let i = 0; i < parts.length; i++) {
+                                if (i > 0) {
+                                  next.push(
+                                    <span
+                                      key={`hl-zh-${i}`}
+                                      className={styles.activeZhHighlightSpan}
+                                    >
+                                      {activeHighlightZh}
+                                    </span>
+                                  );
+                                }
+                                if (parts[i]) next.push(parts[i]);
+                              }
+                            } else {
+                              next.push(s);
+                            }
+                          }
+                          segs = next;
+                        }
+
+                        return segs;
+                      };
+
                       return (
                         <p {...props}>
                           {React.Children.map(children, child => {
-                            if (typeof child === 'string' && currentPageClips.length > 0) {
-                              // 检查文本是否包含已剪藏片段
-                              for (const clip of currentPageClips) {
-                                if (clip.text && child.includes(clip.text)) {
-                                  const parts = child.split(clip.text);
-                                  return parts.reduce((acc: any[], part: string, i: number) => {
-                                    if (i > 0) {
-                                      acc.push(
-                                        <span
-                                          key={`clip-${clip.id}-${i}`}
-                                          className={styles.clippedTextSpan}
-                                          onClick={(e) => handleClippedSpanClick(e, clip)}
-                                          data-tooltip="已剪藏（点击唤起微岛）"
-                                        >
-                                          {clip.text}
-                                        </span>
-                                      );
-                                    }
-                                    acc.push(part);
-                                    return acc;
-                                  }, []);
-                                }
-                              }
+                            if (typeof child === 'string') {
+                              return formatTextSegments(child);
                             }
                             return child;
                           })}

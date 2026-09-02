@@ -227,19 +227,26 @@ async function runPaddleOcrJob(
 
         if (state === 'done' || state === 'success' || state === 'SUCCESS') {
           const resultUrl = pollData.data?.resultUrl || pollData.resultUrl;
+          // 优先使用 PaddleOCR-VL 生成的高保真结构化 Markdown 文件 (保留标题、段落、表格与公式)
+          if (resultUrl?.markdownUrl) {
+            try {
+              const mdRes = await fetch(resultUrl.markdownUrl);
+              if (mdRes.ok) {
+                const mdText = await mdRes.text();
+                if (mdText.trim()) {
+                  return { text: mdText.trim(), raw: pollData };
+                }
+              }
+            } catch (e) {
+              console.warn('Failed to fetch markdownUrl, falling back to jsonUrl', e);
+            }
+          }
           if (resultUrl?.jsonUrl) {
             const jsonRes = await fetch(resultUrl.jsonUrl);
             if (jsonRes.ok) {
               const resultJson = await jsonRes.json();
               const extracted = extractTextFromPaddleResult(resultJson.result || resultJson);
               return { text: extracted, raw: resultJson };
-            }
-          }
-          if (resultUrl?.markdownUrl) {
-            const mdRes = await fetch(resultUrl.markdownUrl);
-            if (mdRes.ok) {
-              const mdText = await mdRes.text();
-              return { text: mdText, raw: pollData };
             }
           }
 

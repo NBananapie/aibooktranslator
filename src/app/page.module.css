@@ -1341,6 +1341,18 @@
   z-index: 12;
 }
 
+/* === 译文对应段落/句子常驻琥珀金高亮 === */
+.activeZhHighlightSpan {
+  background: rgba(245, 158, 11, 0.25);
+  border-bottom: 2px solid var(--primary);
+  border-radius: 3px;
+  padding: 1px 4px;
+  box-shadow: 0 0 8px rgba(245, 158, 11, 0.25);
+  color: inherit;
+  display: inline;
+  transition: all 0.2s ease;
+}
+
 @keyframes exactPulse {
   0%, 100% {
     background: rgba(245, 158, 11, 0.38);
