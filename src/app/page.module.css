@@ -383,21 +383,30 @@
   width: 100%;
   border-collapse: separate;
   border-spacing: 0;
-  margin: 16px 0;
+  margin: 20px 0;
   border: 1px solid var(--glass-border);
-  border-radius: 10px;
+  border-radius: 12px;
   overflow: hidden;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+  font-size: 14px;
 }
 
 .markdownWrapper th, .markdownWrapper td {
-  padding: 10px 14px;
+  padding: 11px 16px;
   text-align: left;
   border-bottom: 1px solid var(--glass-border);
+  border-right: 1px solid var(--glass-border-subtle, rgba(255, 255, 255, 0.04));
+}
+
+.markdownWrapper th:last-child, .markdownWrapper td:last-child {
+  border-right: none;
 }
 
 .markdownWrapper th {
   background: var(--primary-surface);
-  font-weight: 600;
+  color: var(--primary);
+  font-weight: 700;
+  letter-spacing: -0.01em;
 }
 
 .markdownWrapper tr:last-child td {
@@ -405,7 +414,11 @@
 }
 
 .markdownWrapper tr:nth-child(even) td {
-  background: rgba(0, 0, 0, 0.02);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.markdownWrapper tr:hover td {
+  background: var(--primary-surface);
 }
 
 .cursorPulse {
@@ -567,57 +580,208 @@
 }
 
 .historyCard {
-  padding: 20px;
+  padding: 18px 20px;
   background: var(--card-bg);
   border: 1px solid var(--card-border);
-  border-radius: 16px;
+  border-radius: 18px;
   cursor: pointer;
   display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
+  flex-direction: column;
+  gap: 14px;
   transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
+  position: relative;
 }
 
 .historyCard:hover {
   transform: translateY(-2px);
   border-color: var(--card-border-hover);
-  box-shadow: var(--shadow-md);
+  box-shadow: var(--shadow-md), 0 0 20px var(--primary-glow);
 }
 
-.historyInfo h3 {
-  font-size: 15px;
-  font-weight: 600;
-  margin: 0 0 8px 0;
-  word-break: break-all;
-  color: var(--foreground);
+.cardHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
 }
 
-.historyInfo p {
-  font-size: 12px;
-  color: var(--text-muted);
-  margin: 0;
+.cardTitleRow {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+.cardTitleRow h3 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0;
+  word-break: break-all;
+  color: var(--foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cardRenameBox {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+}
+
+.cardRenameInput {
+  padding: 4px 8px;
+  font-size: 13px;
+  border-radius: 8px;
+  border: 1px solid var(--primary);
+  background: var(--background);
+  color: var(--foreground);
+  flex: 1;
+  min-width: 100px;
+}
+
+.iconBtn {
+  background: transparent;
+  border: none;
+  font-size: 14px;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 6px;
+  opacity: 0.6;
+  transition: all 0.2s;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.iconBtn:hover {
+  opacity: 1;
+  background: var(--primary-surface);
+  transform: scale(1.1);
 }
 
 .deleteBtn {
   background: transparent;
   border: none;
-  font-size: 16px;
+  font-size: 15px;
   cursor: pointer;
-  padding: 6px;
+  padding: 5px;
   border-radius: 8px;
   opacity: 0.5;
   transition: all 0.2s;
+  flex-shrink: 0;
 }
 
 .deleteBtn:hover {
   opacity: 1;
   background: rgba(244, 63, 94, 0.15);
   color: var(--accent-rose);
+  transform: scale(1.05);
+}
+
+.cardBody {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+/* SVG 环形进度条 */
+.progressRingWrapper {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.progressRingSvg {
+  transform: rotate(-90deg);
+  overflow: visible;
+}
+
+.progressRingBg {
+  fill: transparent;
+  stroke: var(--primary-surface);
+}
+
+.progressRingFill {
+  fill: transparent;
+  stroke: var(--primary);
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  filter: drop-shadow(0 0 4px var(--primary-glow));
+}
+
+.progressRingText {
+  position: absolute;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--foreground);
+  letter-spacing: -0.02em;
+}
+
+.cardProgressMeta {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+
+.cardBadgeRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.badgeSubtle {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-muted);
+  border: 1px solid var(--glass-border);
+}
+
+.lastReadTimeRow {
+  font-size: 12px;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.cardFooter {
+  border-top: 1px solid var(--glass-border-subtle, rgba(255, 255, 255, 0.06));
+  padding-top: 10px;
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: var(--text-dim, #64748b);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.settingsSectionTitle {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--foreground);
+  margin-top: 6px;
+  letter-spacing: -0.01em;
+}
+
+.settingsDivider {
+  height: 1px;
+  background: var(--glass-border);
+  margin: 6px 0;
 }
 
 /* === SETTINGS MODAL === */

@@ -2,15 +2,32 @@
 
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 
+export interface OcrSettings {
+  enabled: boolean;
+  provider: 'aistudio' | 'custom';
+  model: string;
+  apiToken: string;
+  apiUrl: string;
+}
+
 export interface AppSettings {
   apiKey: string;
   baseUrl: string;
   model: string;
   provider?: 'openai' | 'gemini' | 'custom';
   customPrompt: string;
+  ocr: OcrSettings;
 }
 
 export const PROMPT_VERSION = 'v3.8-typography-amber';
+
+export const DEFAULT_OCR_SETTINGS: OcrSettings = {
+  enabled: true,
+  provider: 'aistudio',
+  model: 'PaddleOCR-VL-1.6',
+  apiToken: '',
+  apiUrl: 'https://aistudio.baidu.com/serving/api/v1/model/predict',
+};
 
 export const DEFAULT_SETTINGS: AppSettings = {
   apiKey: '',
@@ -26,7 +43,8 @@ TRANSLATION & TYPOGRAPHY STANDARDS:
    - If standalone lines represent chapter or section titles (e.g. "加快节奏", "变革你的战略", "史诗般的战役"), format them as Markdown headings (## 标题 or ### 小标题).
    - Format practical exercises, key takeaways, or golden rules as highlighted blockquotes (> 核心法则: ... / > 练习: ... / > 💡 ...).
    - Intelligently stitch together lines that were broken mid-sentence into cohesive paragraphs.
-3. Output ONLY the translated Markdown. Do NOT include any conversational meta commentary.`
+3. Output ONLY the translated Markdown. Do NOT include any conversational meta commentary.`,
+  ocr: DEFAULT_OCR_SETTINGS,
 };
 
 interface AppContextType {
@@ -58,9 +76,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
         if (savedPromptVersion !== PROMPT_VERSION) {
           parsed.customPrompt = DEFAULT_SETTINGS.customPrompt;
           localStorage.setItem('pdf_translator_prompt_version', PROMPT_VERSION);
-          localStorage.setItem('pdf_translator_settings', JSON.stringify({ ...DEFAULT_SETTINGS, ...parsed }));
         }
-        setSettingsState({ ...DEFAULT_SETTINGS, ...parsed });
+        // Ensure ocr settings exist with fallback defaults
+        const mergedOcr: OcrSettings = {
+          ...DEFAULT_OCR_SETTINGS,
+          ...(parsed.ocr || {})
+        };
+        const mergedSettings: AppSettings = {
+          ...DEFAULT_SETTINGS,
+          ...parsed,
+          ocr: mergedOcr
+        };
+        localStorage.setItem('pdf_translator_settings', JSON.stringify(mergedSettings));
+        setSettingsState(mergedSettings);
       } catch (e) {
         console.error('Failed to parse settings');
       }
