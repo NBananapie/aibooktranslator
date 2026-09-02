@@ -8,7 +8,16 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import styles from '../app/page.module.css';
 import { useAppContext } from '@/context/AppContext';
-import { getHistoryRecord, saveHistoryRecord, HistoryRecord, updateHistoryFilename, updateHistoryProgress } from '@/lib/db';
+import { 
+  getHistoryRecord, 
+  saveHistoryRecord, 
+  HistoryRecord, 
+  ClipItem,
+  updateHistoryFilename, 
+  updateHistoryProgress, 
+  addHistoryClip, 
+  deleteHistoryClip 
+} from '@/lib/db';
 import { useRouter } from 'next/navigation';
 
 // Initialize PDF.js worker
@@ -112,11 +121,45 @@ export default function PdfTranslator() {
   const [ocrCache, setOcrCache] = useState<Record<number, string>>({});
   const [viewMode, setViewMode] = useState<'translation' | 'ocr_source'>('translation');
 
+  // Clips state (剪藏系统)
+  const [clips, setClips] = useState<ClipItem[]>([]);
+  const [isClipsDrawerOpen, setIsClipsDrawerOpen] = useState<boolean>(false);
+  const clipsBtnRef = useRef<HTMLButtonElement>(null);
+  const [ghostFlyStyle, setGhostFlyStyle] = useState<React.CSSProperties | null>(null);
+  const [ghostFlyText, setGhostFlyText] = useState<string>('');
+
+  // Floating Toolbar state (划词悬浮胶囊栏)
+  const [floatingToolbar, setFloatingToolbar] = useState<{
+    visible: boolean;
+    top: number;
+    left: number;
+    text: string;
+  } | null>(null);
+
+  // Left PDF Highlight Overlay (原文联动高亮)
+  const [pdfHighlightBox, setPdfHighlightBox] = useState<{
+    top: number;
+    left: number;
+    width: number;
+    height: number;
+  } | null>(null);
+  const highlightTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // AI Explain Modal state (深度解释与追问)
+  const [isExplainModalOpen, setIsExplainModalOpen] = useState<boolean>(false);
+  const [explainTargetText, setExplainTargetText] = useState<string>('');
+  const [explainResultText, setExplainResultText] = useState<string>('');
+  const [isExplainLoading, setIsExplainLoading] = useState<boolean>(false);
+  const [explainHistory, setExplainHistory] = useState<{ role: 'user' | 'assistant'; content: string }[]>([]);
+  const [explainFollowUpInput, setExplainFollowUpInput] = useState<string>('');
+  const [showFollowUpInput, setShowFollowUpInput] = useState<boolean>(false);
+
   const [leftPaneWidth, setLeftPaneWidth] = useState<number>(50);
   const [isImmersive, setIsImmersive] = useState<boolean>(false);
   const [isResizing, setIsResizing] = useState<boolean>(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const pdfWrapperRef = useRef<HTMLDivElement>(null);
+  const markdownContainerRef = useRef<HTMLDivElement>(null);
   const [pdfRenderWidth, setPdfRenderWidth] = useState<number>(600);
   const [zoomScale, setZoomScale] = useState<number>(1.0);
 
@@ -144,7 +187,7 @@ export default function PdfTranslator() {
     return () => cancelAnimationFrame(rafId);
   }, []);
 
-  // 自适应动态监听左侧容器宽度，消除硬编码溢出
+  // 自适应动态监听左侧容器宽度
   useEffect(() => {
     if (!pdfWrapperRef.current) return;
     const updateWidth = () => {
@@ -169,6 +212,7 @@ export default function PdfTranslator() {
         setFile(new File([record.pdfData], record.filename, { type: 'application/pdf' }));
         setEditTitleValue(record.filename);
         setTranslationCache(record.translations || {});
+        setClips(record.clips || []);
         
         const initialPage = record.lastReadPage && record.lastReadPage >= 1 ? record.lastReadPage : 1;
         setPageNumber(initialPage);
@@ -195,6 +239,8 @@ export default function PdfTranslator() {
   useEffect(() => {
     currentPageRef.current = pageNumber;
     setViewMode('translation');
+    setFloatingToolbar(null);
+    setPdfHighlightBox(null);
     
     // 中断上一次未完成的翻译流，杜绝竞态与 Token 浪费
     if (abortControllerRef.current) {
@@ -590,6 +636,303 @@ export default function PdfTranslator() {
     };
   }, [isResizing]);
 
+  // === 需求4: 右侧选中译文时在左侧 PDF 原文联动显示高亮遮罩 ===
+  const triggerPdfHighlightForSelection = (selectedText: string) => {
+    if (!selectedText.trim() || !pdfWrapperRef.current) return;
+
+    if (highlightTimerRef.current) {
+      clearTimeout(highlightTimerRef.current);
+    }
+
+    const currentDocText = displayedText || translationCache[pageNumber] || '';
+    if (!currentDocText) return;
+
+    const index = currentDocText.indexOf(selectedText);
+    const totalLen = Math.max(1, currentDocText.length);
+    const ratio = index >= 0 ? index / totalLen : 0.2;
+    const lenRatio = Math.max(0.08, selectedText.length / totalLen);
+
+    // 计算 PDF 容器内部大概相对位置
+    const pdfPageElem = pdfWrapperRef.current.querySelector('.react-pdf__Page') as HTMLElement;
+    if (pdfPageElem) {
+      const pageHeight = pdfPageElem.clientHeight || 800;
+      const pageWidth = pdfPageElem.clientWidth || (pdfRenderWidth * zoomScale);
+      
+      const topPos = Math.max(10, Math.min(pageHeight - 60, ratio * pageHeight + 20));
+      const boxHeight = Math.max(36, Math.min(180, lenRatio * pageHeight * 1.5));
+      const boxWidth = Math.max(200, pageWidth - 48);
+
+      setPdfHighlightBox({
+        top: topPos,
+        left: 24,
+        width: boxWidth,
+        height: boxHeight,
+      });
+
+      // 平滑滚动左侧 PDF 视口至对应区域
+      pdfWrapperRef.current.scrollTo({
+        top: Math.max(0, topPos - 120),
+        behavior: 'smooth',
+      });
+
+      // 4 秒后自动淡出高亮
+      highlightTimerRef.current = setTimeout(() => {
+        setPdfHighlightBox(null);
+      }, 4000);
+    }
+  };
+
+  // === 需求5 & 6: 划词选区监听与悬浮胶囊栏 ===
+  const handleMarkdownSelection = () => {
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed || !selection.toString().trim()) {
+      setFloatingToolbar(null);
+      return;
+    }
+
+    const text = selection.toString().trim();
+    if (text.length < 1) {
+      setFloatingToolbar(null);
+      return;
+    }
+
+    const range = selection.getRangeAt(0);
+    const rect = range.getBoundingClientRect();
+
+    setFloatingToolbar({
+      visible: true,
+      top: rect.top,
+      left: rect.left + rect.width / 2,
+      text,
+    });
+
+    // 触发左侧原文联动高亮
+    triggerPdfHighlightForSelection(text);
+  };
+
+  // 点击外部关闭悬浮胶囊栏
+  useEffect(() => {
+    const handleGlobalMouseDown = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (target.closest(`.${styles.floatingToolbar}`) || target.closest(`.${styles.explainCardModal}`)) {
+        return;
+      }
+      const selection = window.getSelection();
+      if (!selection || selection.isCollapsed) {
+        setFloatingToolbar(null);
+      }
+    };
+
+    window.addEventListener('mousedown', handleGlobalMouseDown);
+    return () => window.removeEventListener('mousedown', handleGlobalMouseDown);
+  }, []);
+
+  // === 需求5: 剪藏文字与飞入动效 ===
+  const handleAddClip = async () => {
+    if (!floatingToolbar || !floatingToolbar.text || !activeFileId) return;
+    const textToClip = floatingToolbar.text;
+
+    // 触发飞入吸入动效
+    const selection = window.getSelection();
+    let startRect = { top: floatingToolbar.top, left: floatingToolbar.left, width: 120, height: 30 };
+    if (selection && !selection.isCollapsed) {
+      startRect = selection.getRangeAt(0).getBoundingClientRect();
+    }
+
+    const targetRect = clipsBtnRef.current?.getBoundingClientRect() || { top: 20, left: window.innerWidth - 60, width: 30, height: 30 };
+
+    setGhostFlyText(textToClip.slice(0, 30) + (textToClip.length > 30 ? '...' : ''));
+    setGhostFlyStyle({
+      top: startRect.top,
+      left: startRect.left,
+      width: Math.min(260, Math.max(100, startRect.width)),
+      transform: 'scale(1) translateY(0)',
+      opacity: 1,
+      filter: 'blur(0px)',
+    });
+
+    // 触发吸入抽屉动画
+    requestAnimationFrame(() => {
+      setTimeout(() => {
+        setGhostFlyStyle({
+          top: targetRect.top,
+          left: targetRect.left,
+          width: 60,
+          transform: 'scale(0.2) translateY(-20px)',
+          opacity: 0,
+          filter: 'blur(8px)',
+        });
+      }, 50);
+    });
+
+    setTimeout(() => {
+      setGhostFlyStyle(null);
+      setGhostFlyText('');
+    }, 700);
+
+    const newClip: ClipItem = {
+      id: crypto.randomUUID(),
+      pageNumber,
+      text: textToClip,
+      sourceText: `第 ${pageNumber} 页书摘`,
+      createdAt: Date.now(),
+    };
+
+    await addHistoryClip(activeFileId, newClip);
+    setClips(prev => [newClip, ...prev.filter(c => c.id !== newClip.id)]);
+    setFloatingToolbar(null);
+  };
+
+  // 删除剪藏
+  const handleDeleteClip = async (clipId: string) => {
+    if (!activeFileId) return;
+    await deleteHistoryClip(activeFileId, clipId);
+    setClips(prev => prev.filter(c => c.id !== clipId));
+  };
+
+  // 复制剪藏
+  const handleCopyClip = (text: string) => {
+    navigator.clipboard.writeText(text);
+    alert('已复制剪藏内容到剪贴板！');
+  };
+
+  // 一键复制所有剪藏
+  const handleCopyAllClips = () => {
+    if (clips.length === 0) return;
+    const content = clips
+      .map((c, i) => `【摘录 ${i + 1}】(第 ${c.pageNumber} 页):\n${c.text}\n`)
+      .join('\n---\n\n');
+    navigator.clipboard.writeText(content);
+    alert(`已复制全部 ${clips.length} 条剪藏内容！`);
+  };
+
+  // 导出剪藏为 Markdown
+  const handleExportClipsMarkdown = () => {
+    if (clips.length === 0 || !file) return;
+    let md = `# 📖 《${file.name.replace('.pdf', '')}》剪藏书摘\n\n`;
+    md += `> 共收集 ${clips.length} 处精华摘录 | 导出时间: ${new Date().toLocaleString()}\n\n---\n\n`;
+    clips.forEach((c, idx) => {
+      md += `### 摘录 ${idx + 1}（第 ${c.pageNumber} 页）\n\n`;
+      md += `> ${c.text.replace(/\n/g, '\n> ')}\n\n`;
+      md += `*记录于: ${new Date(c.createdAt).toLocaleString()}*\n\n---\n\n`;
+    });
+
+    const blob = new Blob([md], { type: 'text/markdown;charset=utf-8;' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `${file.name.replace('.pdf', '')}_剪藏书摘.md`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  };
+
+  // === 需求6: AI 深度解释与多轮追问 ===
+  const handleOpenExplain = async () => {
+    if (!floatingToolbar || !floatingToolbar.text) return;
+    const textToExplain = floatingToolbar.text;
+    setFloatingToolbar(null);
+    setExplainTargetText(textToExplain);
+    setExplainResultText('');
+    setExplainHistory([]);
+    setShowFollowUpInput(false);
+    setIsExplainModalOpen(true);
+    setIsExplainLoading(true);
+
+    try {
+      const response = await fetch('/api/explain', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          selectedText: textToExplain,
+          contextText: displayedText || translationCache[pageNumber] || '',
+          apiKey: settings.apiKey,
+          baseUrl: settings.baseUrl,
+          model: settings.model,
+          provider: settings.provider,
+        }),
+      });
+
+      if (!response.ok || !response.body) {
+        throw new Error('AI 解释服务请求失败');
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let done = false;
+      let currentOutput = '';
+
+      while (!done) {
+        const { value, done: readerDone } = await reader.read();
+        done = readerDone;
+        if (value) {
+          currentOutput += decoder.decode(value, { stream: true });
+          setExplainResultText(currentOutput);
+        }
+      }
+    } catch (err: any) {
+      console.error(err);
+      setExplainResultText(`解析失败: ${err.message || err}`);
+    } finally {
+      setIsExplainLoading(false);
+    }
+  };
+
+  // 提交深入追问
+  const handleSendFollowUp = async () => {
+    if (!explainFollowUpInput.trim() || isExplainLoading) return;
+    const question = explainFollowUpInput.trim();
+    setExplainFollowUpInput('');
+    setIsExplainLoading(true);
+
+    const newHistory = [
+      ...explainHistory,
+      ...(explainResultText && explainHistory.length === 0
+        ? [{ role: 'assistant' as const, content: explainResultText }]
+        : []),
+      { role: 'user' as const, content: question },
+    ];
+    setExplainHistory(newHistory);
+
+    try {
+      const response = await fetch('/api/explain', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          selectedText: explainTargetText,
+          contextText: displayedText || translationCache[pageNumber] || '',
+          question,
+          history: newHistory,
+          apiKey: settings.apiKey,
+          baseUrl: settings.baseUrl,
+          model: settings.model,
+          provider: settings.provider,
+        }),
+      });
+
+      if (!response.ok || !response.body) {
+        throw new Error('追问请求响应异常');
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let done = false;
+      let aiResponse = '';
+
+      while (!done) {
+        const { value, done: readerDone } = await reader.read();
+        done = readerDone;
+        if (value) {
+          aiResponse += decoder.decode(value, { stream: true });
+          setExplainHistory([...newHistory, { role: 'assistant', content: aiResponse }]);
+        }
+      }
+    } catch (err: any) {
+      console.error(err);
+      setExplainHistory([...newHistory, { role: 'assistant', content: `追问回答出错: ${err.message || err}` }]);
+    } finally {
+      setIsExplainLoading(false);
+    }
+  };
+
   const downloadMarkdown = () => {
     if (!file || Object.keys(translationCache).length === 0) return;
     
@@ -624,6 +967,32 @@ export default function PdfTranslator() {
         <div className={styles.uploadOverlay}>
            <div className={styles.spinner} />
            <p style={{marginTop: '16px', color: 'var(--primary)', fontWeight: 500}}>正在解构 PDF 文档...</p>
+        </div>
+      )}
+
+      {/* 模糊飞入吸入克隆元素 */}
+      {ghostFlyStyle && (
+        <div className={styles.ghostFlyingItem} style={ghostFlyStyle}>
+          📌 {ghostFlyText}
+        </div>
+      )}
+
+      {/* 划词悬浮胶囊工具栏 */}
+      {floatingToolbar && floatingToolbar.visible && (
+        <div 
+          className={styles.floatingToolbar} 
+          style={{ top: `${floatingToolbar.top}px`, left: `${floatingToolbar.left}px` }}
+          onMouseDown={e => e.stopPropagation()}
+        >
+          <button className={`${styles.capsuleBtn} ${styles.capsuleBtnPrimary}`} onClick={handleAddClip} title="将选中文字剪藏至本书摘录">
+            📌 剪藏
+          </button>
+          <button className={styles.capsuleBtn} onClick={handleOpenExplain} title="结合上下文让 AI 深度解析该词句">
+            💡 解释
+          </button>
+          <button className={styles.capsuleBtn} onClick={() => { navigator.clipboard.writeText(floatingToolbar.text); setFloatingToolbar(null); }} title="复制选中文字">
+            📋 复制
+          </button>
         </div>
       )}
 
@@ -746,12 +1115,26 @@ export default function PdfTranslator() {
                 onLoadSuccess={onDocumentLoadSuccess}
                 loading={<div className={styles.loadingOverlay}><div className={styles.spinner} /></div>}
               >
-                <Page 
-                  pageNumber={pageNumber} 
-                  width={pdfRenderWidth * zoomScale} 
-                  renderTextLayer={true}
-                  renderAnnotationLayer={false}
-                />
+                <div style={{ position: 'relative' }}>
+                  <Page 
+                    pageNumber={pageNumber} 
+                    width={pdfRenderWidth * zoomScale} 
+                    renderTextLayer={true}
+                    renderAnnotationLayer={false}
+                  />
+                  {/* 原文联动琥珀高光遮罩 */}
+                  {pdfHighlightBox && (
+                    <div 
+                      className={styles.pdfHighlightOverlay}
+                      style={{
+                        top: `${pdfHighlightBox.top}px`,
+                        left: `${pdfHighlightBox.left}px`,
+                        width: `${pdfHighlightBox.width}px`,
+                        height: `${pdfHighlightBox.height}px`,
+                      }}
+                    />
+                  )}
+                </div>
               </Document>
             )}
           </div>
@@ -828,6 +1211,18 @@ export default function PdfTranslator() {
               {theme === 'dark' ? '☀️' : '🌙'}
             </button>
 
+            {/* 剪藏库入口 */}
+            <button
+              ref={clipsBtnRef}
+              type="button"
+              className={styles.btnSecondary}
+              onClick={() => setIsClipsDrawerOpen(true)}
+              title="查看本书全部剪藏摘录"
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '5px' }}
+            >
+              📑 剪藏 ({clips.length})
+            </button>
+
             {isImmersive && (
               <button
                 type="button"
@@ -895,7 +1290,12 @@ export default function PdfTranslator() {
           </div>
         </div>
 
-        <div className={styles.markdownWrapper}>
+        <div 
+          className={styles.markdownWrapper}
+          ref={markdownContainerRef}
+          onMouseUp={handleMarkdownSelection}
+          onKeyUp={handleMarkdownSelection}
+        >
           {isTranslating && !displayedText ? (
             <div className={styles.loadingOverlay}>
               <div className={styles.spinner} />
@@ -952,6 +1352,166 @@ export default function PdfTranslator() {
         </div>
       </div>
 
+      {/* 剪藏侧边栏抽屉 (Clips Drawer) */}
+      {isClipsDrawerOpen && (
+        <div className={styles.clipsDrawerOverlay} onClick={() => setIsClipsDrawerOpen(false)}>
+          <div className={styles.clipsDrawer} onClick={e => e.stopPropagation()}>
+            <div className={styles.clipsHeader}>
+              <h3>📑 本书剪藏摘录 ({clips.length})</h3>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button 
+                  className={styles.btnSecondary} 
+                  style={{ padding: '4px 8px', fontSize: '12px' }}
+                  onClick={handleCopyAllClips}
+                  disabled={clips.length === 0}
+                  title="一键复制全部剪藏"
+                >
+                  📋 复制全部
+                </button>
+                <button 
+                  className={styles.btnSecondary} 
+                  style={{ padding: '4px 8px', fontSize: '12px' }}
+                  onClick={handleExportClipsMarkdown}
+                  disabled={clips.length === 0}
+                  title="导出为 Markdown 书摘"
+                >
+                  ⬇ 导出 MD
+                </button>
+                <button 
+                  className={styles.iconBtn} 
+                  onClick={() => setIsClipsDrawerOpen(false)}
+                  title="关闭抽屉"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+
+            <div className={styles.clipsList}>
+              {clips.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '48px 16px', color: 'var(--text-muted)', fontSize: '14px' }}>
+                  <p>暂无剪藏内容</p>
+                  <p style={{ fontSize: '12px', marginTop: '6px' }}>在右侧译文中鼠标划词选中任意段落，点击【📌 剪藏】即可收录至此</p>
+                </div>
+              ) : (
+                clips.map(clip => (
+                  <div key={clip.id} className={styles.clipCard}>
+                    <div className={styles.clipMeta}>
+                      <span 
+                        style={{ cursor: 'pointer', color: 'var(--primary)', fontWeight: 600 }}
+                        onClick={() => { setPageNumber(clip.pageNumber); setIsClipsDrawerOpen(false); }}
+                        title="点击跳转至此页"
+                      >
+                        第 {clip.pageNumber} 页 ↗
+                      </span>
+                      <span>{new Date(clip.createdAt).toLocaleDateString()} {new Date(clip.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                    </div>
+                    <p className={styles.clipContent}>{clip.text}</p>
+                    <div className={styles.clipActions}>
+                      <button 
+                        className={styles.btnSecondary} 
+                        style={{ padding: '2px 8px', fontSize: '11px' }}
+                        onClick={() => handleCopyClip(clip.text)}
+                        title="复制此段"
+                      >
+                        复制
+                      </button>
+                      <button 
+                        className={styles.btnSecondary} 
+                        style={{ padding: '2px 8px', fontSize: '11px', color: 'var(--accent-rose)' }}
+                        onClick={() => handleDeleteClip(clip.id)}
+                        title="删除此条剪藏"
+                      >
+                        删除
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* AI 深度解释与追问卡片小窗 (Explain Modal) */}
+      {isExplainModalOpen && (
+        <div className={styles.explainCardOverlay} onClick={() => setIsExplainModalOpen(false)}>
+          <div className={styles.explainCardModal} onClick={e => e.stopPropagation()}>
+            <div className={styles.explainHeader}>
+              <h3>💡 AI 深度伴读解析</h3>
+              <button className={styles.iconBtn} onClick={() => setIsExplainModalOpen(false)}>✕</button>
+            </div>
+
+            <div className={styles.explainBody}>
+              {/* 选中的词句引用 */}
+              <div className={styles.explainSelectionQuote}>
+                “{explainTargetText}”
+              </div>
+
+              {/* 首轮解释解析 */}
+              {isExplainLoading && !explainResultText && explainHistory.length === 0 ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', color: 'var(--primary)', padding: '20px 0' }}>
+                  <div className={styles.spinner} style={{ width: '20px', height: '20px' }} />
+                  <span>正在结合上下文进行深度研读与背景解析...</span>
+                </div>
+              ) : (
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  {explainResultText}
+                </ReactMarkdown>
+              )}
+
+              {/* 多轮追问历史 */}
+              {explainHistory.length > 0 && (
+                <div className={styles.explainChatHistory}>
+                  {explainHistory.map((msg, idx) => (
+                    <div 
+                      key={idx} 
+                      className={msg.role === 'user' ? styles.explainChatMessageUser : styles.explainChatMessageAi}
+                    >
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {msg.content}
+                      </ReactMarkdown>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className={styles.explainFooter}>
+              {!showFollowUpInput ? (
+                <button 
+                  className={styles.btnSecondary}
+                  style={{ alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: '6px' }}
+                  onClick={() => setShowFollowUpInput(true)}
+                >
+                  💬 深入追问与探讨...
+                </button>
+              ) : (
+                <div className={styles.explainInputRow}>
+                  <input
+                    type="text"
+                    className={styles.explainInput}
+                    placeholder="输入您对该词句或概念的疑问..."
+                    value={explainFollowUpInput}
+                    onChange={e => setExplainFollowUpInput(e.target.value)}
+                    onKeyDown={e => e.key === 'Enter' && handleSendFollowUp()}
+                    autoFocus
+                  />
+                  <button 
+                    className={styles.btn} 
+                    style={{ padding: '8px 14px', fontSize: '13px' }}
+                    onClick={handleSendFollowUp}
+                    disabled={isExplainLoading || !explainFollowUpInput.trim()}
+                  >
+                    {isExplainLoading ? '生成中...' : '发送'}
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Immersive Mode Keyboard Navigation Hint */}
       {isImmersive && (
         <div className={styles.immersiveHint}>
@@ -962,5 +1522,6 @@ export default function PdfTranslator() {
     </div>
   );
 }
+
 
 

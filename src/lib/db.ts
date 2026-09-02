@@ -1,3 +1,12 @@
+export interface ClipItem {
+  id: string;
+  pageNumber: number;
+  text: string;
+  sourceText?: string;
+  note?: string;
+  createdAt: number;
+}
+
 export interface HistoryRecord {
   id: string;
   filename: string;
@@ -7,6 +16,7 @@ export interface HistoryRecord {
   lastReadPage?: number;
   pdfData: ArrayBuffer;
   translations: Record<number, string>;
+  clips?: ClipItem[];
 }
 
 const DB_NAME = 'PdfTranslatorDB';
@@ -73,6 +83,23 @@ export async function updateHistoryProgress(
   await saveHistoryRecord(record);
 }
 
+export async function addHistoryClip(id: string, clip: ClipItem): Promise<void> {
+  const record = await getHistoryRecord(id);
+  if (!record) return;
+  const existingClips = record.clips || [];
+  // 避免重复剪藏完全相同的文本
+  const filtered = existingClips.filter(c => c.id !== clip.id);
+  record.clips = [clip, ...filtered];
+  await saveHistoryRecord(record);
+}
+
+export async function deleteHistoryClip(id: string, clipId: string): Promise<void> {
+  const record = await getHistoryRecord(id);
+  if (!record || !record.clips) return;
+  record.clips = record.clips.filter(c => c.id !== clipId);
+  await saveHistoryRecord(record);
+}
+
 export async function getAllHistoryMetadata(): Promise<Omit<HistoryRecord, 'pdfData'>[]> {
   const db = await getDB();
   return new Promise((resolve, reject) => {
@@ -89,7 +116,8 @@ export async function getAllHistoryMetadata(): Promise<Omit<HistoryRecord, 'pdfD
         lastReadTime: record.lastReadTime || record.date,
         totalPages: record.totalPages,
         lastReadPage: record.lastReadPage,
-        translations: record.translations || {}
+        translations: record.translations || {},
+        clips: record.clips || []
       }));
       // Sort by lastReadTime or date descending
       records.sort((a, b) => (b.lastReadTime || b.date) - (a.lastReadTime || a.date));

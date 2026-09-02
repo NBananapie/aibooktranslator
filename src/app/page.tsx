@@ -195,7 +195,6 @@ export default function Home() {
       <header className={styles.homeHeader}>
         <div className={styles.brand}>
           <h1>AI PDF Translator</h1>
-          <span className={styles.badge}>Astryx 3.7</span>
         </div>
         <div className={styles.controls}>
           <button 
@@ -477,6 +476,16 @@ export default function Home() {
             </div>
 
             <div className={styles.modalActions}>
+              <a 
+                href="https://justganit.com" 
+                target="_blank" 
+                rel="noopener noreferrer" 
+                className={styles.btnSecondary}
+                style={{ marginRight: 'auto', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                title="访问 JustGanIt 探索更多 AI 工具"
+              >
+                🌐 联系开发者 (JustGanIt)
+              </a>
               <button className={styles.btnSecondary} onClick={() => setIsSettingsOpen(false)}>取消</button>
               <button className={styles.btn} onClick={saveSettings}>保存设置</button>
             </div>
