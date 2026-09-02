@@ -1,6 +1,17 @@
 import { NextResponse } from 'next/server';
 
-export const runtime = 'nodejs';
+export const runtime = 'edge';
+
+// Web 标准 Base64 转 Uint8Array (Edge Runtime 兼容)
+function base64ToUint8Array(base64: string): Uint8Array {
+  const binaryString = atob(base64);
+  const len = binaryString.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  return bytes;
+}
 
 // 递归提取百度飞桨 OCR / Layout 分析结果中的 Markdown / 结构化文本
 function extractTextFromPaddleResult(result: any): string {
@@ -128,7 +139,7 @@ function extractTextFromPaddleResult(result: any): string {
 async function runPaddleOcrJob(
   token: string,
   modelName: string,
-  imageBuffer: Buffer,
+  imageBytes: Uint8Array,
   apiUrl?: string
 ): Promise<{ text: string; raw: any }> {
   const baseBaseUrl = apiUrl && apiUrl.includes('/api/v2/ocr/jobs')
@@ -144,7 +155,7 @@ async function runPaddleOcrJob(
       formData.append('model', currentModel);
       formData.append('optionalPayload', JSON.stringify({}));
       
-      const blob = new Blob([new Uint8Array(imageBuffer)], { type: 'image/png' });
+      const blob = new Blob([imageBytes.buffer as ArrayBuffer], { type: 'image/png' });
       formData.append('file', blob, 'page_screenshot.png');
 
       const submitRes = await fetch(baseBaseUrl, {
@@ -261,15 +272,15 @@ export async function POST(req: Request) {
       );
     }
 
-    // 清洗 Base64 编码，转换为 Buffer
+    // 清洗 Base64 编码，转换为 Uint8Array
     let cleanBase64 = image;
     if (cleanBase64.includes('base64,')) {
       cleanBase64 = cleanBase64.split('base64,')[1];
     }
     cleanBase64 = cleanBase64.replace(/[\r\n\s]/g, '');
-    const imageBuffer = Buffer.from(cleanBase64, 'base64');
+    const imageBytes = base64ToUint8Array(cleanBase64);
 
-    const result = await runPaddleOcrJob(token, model, imageBuffer, apiUrl);
+    const result = await runPaddleOcrJob(token, model, imageBytes, apiUrl);
 
     if (!result.text.trim()) {
       return NextResponse.json({
