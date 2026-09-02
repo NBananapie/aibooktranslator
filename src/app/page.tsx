@@ -23,7 +23,7 @@ import {
 
 const PROVIDER_PRESETS: { label: string; baseUrl: string; model: string; provider: 'openai' | 'gemini' | 'custom' }[] = [
   { label: 'MiniMax', baseUrl: 'https://api.minimax.chat/v1', model: 'MiniMax-M2.7-highspeed', provider: 'openai' },
-  { label: 'Google Gemini (2.5 Flash 推荐)', baseUrl: 'https://generativelanguage.googleapis.com', model: 'gemini-2.5-flash', provider: 'gemini' },
+  { label: 'Google Gemini (3.5 Flash-Lite)', baseUrl: 'https://generativelanguage.googleapis.com', model: 'gemini-3.5-flash-lite', provider: 'gemini' },
   { label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', provider: 'openai' },
 ];
 
@@ -420,17 +420,17 @@ export default function Home() {
                         type="button"
                         className={styles.btnSecondary}
                         style={{ padding: '2px 6px', fontSize: '10px' }}
-                        onClick={() => setFormSettings({ ...formSettings, model: 'gemini-2.5-flash' })}
+                        onClick={() => setFormSettings({ ...formSettings, model: 'gemini-3.5-flash-lite' })}
                       >
-                        gemini-2.5-flash (推荐)
+                        gemini-3.5-flash-lite
                       </button>
                       <button
                         type="button"
                         className={styles.btnSecondary}
                         style={{ padding: '2px 6px', fontSize: '10px' }}
-                        onClick={() => setFormSettings({ ...formSettings, model: 'gemini-2.0-flash-lite' })}
+                        onClick={() => setFormSettings({ ...formSettings, model: 'gemini-2.5-flash' })}
                       >
-                        gemini-2.0-flash-lite
+                        gemini-2.5-flash
                       </button>
                     </>
                   ) : formSettings.baseUrl.includes('minimax') ? (
