@@ -255,6 +255,14 @@
   background: rgba(0, 0, 0, 0.08);
 }
 
+.pdfPageContainer {
+  position: relative;
+  background: #ffffff;
+  border-radius: 4px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12);
+  min-height: 500px;
+}
+
 .markdownWrapper {
   flex: 1;
   overflow: auto;
@@ -1440,20 +1448,25 @@
   pointer-events: none;
 }
 
-/* === 翻页平滑淡入动效 === */
-.pageFadeIn {
-  animation: pageFadeInAnim 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+/* === 沉浸模式平滑隐藏与常驻挂载 === */
+.hiddenPane {
+  display: none !important;
 }
 
-@keyframes pageFadeInAnim {
-  from {
-    opacity: 0.35;
-    transform: translateY(4px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+/* === 翻页平滑无感过渡 === */
+.pageFadeIn {
+  transition: opacity 0.15s ease;
+}
+
+/* === 译文对应句子常驻高亮 === */
+.activeZhSentenceSpan {
+  background: rgba(245, 158, 11, 0.18);
+  border-bottom: 2px solid var(--primary);
+  border-radius: 4px;
+  padding: 1px 4px;
+  transition: background 0.18s ease;
+  box-shadow: 0 0 8px rgba(245, 158, 11, 0.2);
+  display: inline;
 }
 
 
