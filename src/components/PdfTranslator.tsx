@@ -177,6 +177,73 @@ function parseTranslationOutput(rawText: string): {
   return { cleanMarkdown, alignmentMap };
 }
 
+// 基于单词流连续滑动窗口的 PDF 精准高亮匹配算法，杜绝全页模糊误涂
+function findContiguousItemsForSentence(sentence: string, items: any[]): any[] {
+  if (!sentence.trim() || items.length === 0) return [];
+
+  // 1. 提取句子的连续英文单词序列
+  const targetWords = sentence.toLowerCase().replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter(Boolean);
+  if (targetWords.length === 0) return [];
+
+  // 2. 将 items 扁平化为带 itemIdx 的单词流
+  const flatWords: Array<{ word: string; itemIdx: number }> = [];
+  for (let idx = 0; idx < items.length; idx++) {
+    const str = items[idx].str || '';
+    const words = str.toLowerCase().replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter(Boolean);
+    for (const w of words) {
+      flatWords.push({ word: w, itemIdx: idx });
+    }
+  }
+  if (flatWords.length === 0) return [];
+
+  // 3. 在 flatWords 中寻找与 targetWords 最长匹配的滑动窗口
+  let bestStart = -1;
+  let bestMatchLen = 0;
+
+  for (let i = 0; i < flatWords.length; i++) {
+    let matchCount = 0;
+    for (let j = 0; j < Math.min(targetWords.length, flatWords.length - i); j++) {
+      if (flatWords[i + j].word === targetWords[j]) {
+        matchCount++;
+      } else {
+        break;
+      }
+    }
+    if (matchCount > bestMatchLen) {
+      bestMatchLen = matchCount;
+      bestStart = i;
+      if (bestMatchLen === targetWords.length) break;
+    }
+  }
+
+  // 4. 如果找到了显著匹配序列（至少匹配 3 个词，或者占句子词数的 30% 以上）
+  if (bestStart >= 0 && (bestMatchLen >= 3 || bestMatchLen >= targetWords.length * 0.3)) {
+    const startItemIdx = flatWords[bestStart].itemIdx;
+    const endItemIdx = flatWords[bestStart + bestMatchLen - 1].itemIdx;
+    return items.slice(startItemIdx, endItemIdx + 1);
+  }
+
+  // 5. 备用兜底：首尾词锚点匹配
+  const firstWord = targetWords[0];
+  const lastWord = targetWords[targetWords.length - 1];
+  let firstIdx = -1;
+  let lastIdx = -1;
+  for (let i = 0; i < flatWords.length; i++) {
+    if (firstIdx === -1 && flatWords[i].word === firstWord) {
+      firstIdx = flatWords[i].itemIdx;
+    }
+    if (firstIdx !== -1 && flatWords[i].word === lastWord && flatWords[i].itemIdx >= firstIdx) {
+      lastIdx = flatWords[i].itemIdx;
+      break;
+    }
+  }
+  if (firstIdx !== -1 && lastIdx !== -1 && lastIdx - firstIdx <= 15) {
+    return items.slice(firstIdx, lastIdx + 1);
+  }
+
+  return [];
+}
+
 export default function PdfTranslator() {
   const { settings, activeFileId, theme, toggleTheme } = useAppContext();
   const router = useRouter();
@@ -185,7 +252,6 @@ export default function PdfTranslator() {
   const [file, setFile] = useState<File | null>(null);
   const [numPages, setNumPages] = useState<number>(0);
   const [pageNumber, setPageNumber] = useState<number>(1);
-  const [pageAnimKey, setPageAnimKey] = useState<number>(1);
   
   // Title editing state
   const [isEditingTitle, setIsEditingTitle] = useState<boolean>(false);
@@ -220,7 +286,10 @@ export default function PdfTranslator() {
     height: number;
   }>>([]);
   const [activeHighlightZh, setActiveHighlightZh] = useState<string>('');
+  const [activeSentenceZh, setActiveSentenceZh] = useState<string>('');
   const highlightTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const translationCacheRef = useRef<Record<number, string>>({});
+  const isPreTranslatingRef = useRef<boolean>(false);
 
   // Clips state (剪藏系统)
   const [clips, setClips] = useState<ClipItem[]>([]);
@@ -308,7 +377,6 @@ export default function PdfTranslator() {
         
         const initialPage = record.lastReadPage && record.lastReadPage >= 1 ? record.lastReadPage : 1;
         setPageNumber(initialPage);
-        setPageAnimKey(initialPage);
 
         if (record.translations && record.translations[initialPage]) {
           const raw = record.translations[initialPage];
@@ -364,7 +432,7 @@ export default function PdfTranslator() {
     setFloatingToolbar(null);
     setExactHighlightSpans([]);
     setActiveHighlightZh('');
-    setPageAnimKey(Date.now());
+    setActiveSentenceZh('');
     
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
@@ -395,8 +463,9 @@ export default function PdfTranslator() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pageNumber, activeFileId]);
 
-  // Persist translationCache to DB
+  // Persist translationCache to DB and sync ref
   useEffect(() => {
+    translationCacheRef.current = translationCache;
     if (dbRecord && Object.keys(translationCache).length > 0) {
       const updatedRecord = { ...dbRecord, translations: translationCache };
       setDbRecord(updatedRecord);
@@ -585,7 +654,7 @@ export default function PdfTranslator() {
 
   const translateCurrentPage = useCallback(async (force = false) => {
     if (!file) return;
-    if (!force && translationCache[pageNumber]) return;
+    if (!force && translationCacheRef.current[pageNumber]) return;
 
     setViewMode('translation');
     setIsTranslating(true);
@@ -626,97 +695,125 @@ export default function PdfTranslator() {
       setIsTranslating(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [file, pageNumber, translationCache, settings]);
+  }, [file, pageNumber, settings]);
 
-  const preTranslateNextPage = async () => {
-    if (!file || pageNumber >= numPages) return;
-    const nextPage = pageNumber + 1;
-    if (translationCache[nextPage]) return;
+  // 静默流水线预加载：后台平滑预翻译后续多页 (当前页+1, 当前页+2)，实现一口气预加载与无缝阅读
+  const preTranslatePipeline = useCallback(async (startPage: number) => {
+    if (!file || isPreTranslatingRef.current) return;
+    
+    // 寻找紧随其后的未翻译页面
+    const pagesToPreload = [startPage + 1, startPage + 2].filter(
+      p => p <= numPages && !translationCacheRef.current[p]
+    );
 
+    if (pagesToPreload.length === 0) return;
+
+    isPreTranslatingRef.current = true;
     setIsPreTranslating(true);
+
     try {
       const arrayBuffer = await file.arrayBuffer();
       const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
-      const page = await pdf.getPage(nextPage);
-      const textContent = await page.getTextContent();
-      
-      let extractedText = extractPdfTextWithHierarchy(textContent.items as any[]);
 
-      if (!extractedText.trim() && settings.ocr?.apiToken?.trim()) {
-        const viewport = page.getViewport({ scale: 2.0 });
-        const canvas = document.createElement('canvas');
-        canvas.width = viewport.width;
-        canvas.height = viewport.height;
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          await (page.render as any)({ canvasContext: ctx, viewport, canvas }).promise;
-          const imageBase64 = canvas.toDataURL('image/jpeg', 0.95);
-          const ocrRes = await fetch('/api/ocr', {
+      for (const targetPage of pagesToPreload) {
+        if (translationCacheRef.current[targetPage]) continue;
+
+        try {
+          const page = await pdf.getPage(targetPage);
+          const textContent = await page.getTextContent();
+          let extractedText = extractPdfTextWithHierarchy(textContent.items as any[]);
+
+          if (!extractedText.trim() && settings.ocr?.apiToken?.trim()) {
+            const viewport = page.getViewport({ scale: 2.0 });
+            const canvas = document.createElement('canvas');
+            canvas.width = viewport.width;
+            canvas.height = viewport.height;
+            const ctx = canvas.getContext('2d');
+            if (ctx) {
+              await (page.render as any)({ canvasContext: ctx, viewport, canvas }).promise;
+              const imageBase64 = canvas.toDataURL('image/jpeg', 0.95);
+              const ocrRes = await fetch('/api/ocr', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  image: imageBase64,
+                  apiToken: settings.ocr.apiToken,
+                  model: settings.ocr.model || 'PaddleOCR-VL-1.6',
+                  apiUrl: settings.ocr.apiUrl,
+                }),
+              });
+              if (ocrRes.ok) {
+                const ocrData = await ocrRes.json();
+                extractedText = ocrData.markdown || ocrData.text || '';
+              }
+            }
+          }
+
+          if (!extractedText.trim()) continue;
+
+          const response = await fetch('/api/translate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              image: imageBase64,
-              apiToken: settings.ocr.apiToken,
-              model: settings.ocr.model || 'PaddleOCR-VL-1.6',
-              apiUrl: settings.ocr.apiUrl,
+            body: JSON.stringify({ 
+              text: extractedText, 
+              targetLanguage: '中文',
+              apiKey: settings.apiKey,
+              baseUrl: settings.baseUrl,
+              model: settings.model,
+              provider: settings.provider,
+              customPrompt: settings.customPrompt
             }),
           });
-          if (ocrRes.ok) {
-            const ocrData = await ocrRes.json();
-            extractedText = ocrData.markdown || ocrData.text || '';
+
+          if (response.ok && response.body) {
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder('utf-8');
+            let done = false;
+            let fullNextText = '';
+
+            while (!done) {
+              const { value, done: readerDone } = await reader.read();
+              done = readerDone;
+              if (value) fullNextText += decoder.decode(value, { stream: true });
+            }
+
+            if (fullNextText.trim()) {
+              setTranslationCache(prev => {
+                const nextCache = { ...prev, [targetPage]: fullNextText };
+                translationCacheRef.current = nextCache;
+                return nextCache;
+              });
+            }
           }
+        } catch (err) {
+          console.warn(`静默预加载第 ${targetPage} 页异常:`, err);
         }
       }
-
-      if (!extractedText.trim()) {
-        setTranslationCache(prev => ({ ...prev, [nextPage]: '*(下一页无文本)*' }));
-        return;
-      }
-
-      const response = await fetch('/api/translate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          text: extractedText, 
-          targetLanguage: '中文',
-          apiKey: settings.apiKey,
-          baseUrl: settings.baseUrl,
-          model: settings.model,
-          provider: settings.provider,
-          customPrompt: settings.customPrompt
-        }),
-      });
-
-      if (!response.ok || !response.body) throw new Error('预翻译请求失败');
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder('utf-8');
-      let done = false;
-      let fullNextText = '';
-
-      while (!done) {
-        const { value, done: readerDone } = await reader.read();
-        done = readerDone;
-        if (value) fullNextText += decoder.decode(value, { stream: true });
-      }
-
-      setTranslationCache(prev => ({ ...prev, [nextPage]: fullNextText }));
     } catch (err) {
-      console.error("Pre-translation error:", err);
+      console.error("Pipeline pre-translation error:", err);
     } finally {
+      isPreTranslatingRef.current = false;
       setIsPreTranslating(false);
     }
-  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [file, numPages, settings]);
 
   useEffect(() => {
-    if (file && autoTranslate) {
-      const timer = setTimeout(async () => {
-        await translateCurrentPage();
-        preTranslateNextPage();
-      }, 500); 
-      return () => clearTimeout(timer);
+    if (!file || !autoTranslate) return;
+
+    // 当前页已就绪时，直接进行后续预加载，绝不反复刷当前页
+    if (translationCacheRef.current[pageNumber]) {
+      preTranslatePipeline(pageNumber);
+      return;
     }
-  }, [file, pageNumber, autoTranslate, translateCurrentPage]);
+
+    const timer = setTimeout(async () => {
+      await translateCurrentPage();
+      preTranslatePipeline(pageNumber);
+    }, 400); 
+
+    return () => clearTimeout(timer);
+  }, [file, pageNumber, autoTranslate, preTranslatePipeline, translateCurrentPage]);
 
   const changePage = useCallback((offset: number) => {
     setPageNumber(prev => Math.min(Math.max(1, prev + offset), numPages));
@@ -768,8 +865,9 @@ export default function PdfTranslator() {
   }, [isResizing]);
 
   // === 核心需求1: 基于大模型双向对齐映射的 100% 精确语义高亮 ===
-  const triggerExactHighlightForSelection = (selectedText: string) => {
-    if (!selectedText.trim() || !pdfWrapperRef.current || pdfTextItems.length === 0) return;
+  const triggerExactHighlightForSelection = (selectedText: string, contextParagraph?: string) => {
+    const queryZh = selectedText.trim();
+    if (!queryZh || !pdfWrapperRef.current || pdfTextItems.length === 0) return;
 
     if (highlightTimerRef.current) {
       clearTimeout(highlightTimerRef.current);
@@ -786,112 +884,72 @@ export default function PdfTranslator() {
     const validItems = pdfTextItems.filter(item => item.str && item.str.trim() && item.transform);
     if (validItems.length === 0) return;
 
-    let matchedItems: any[] = [];
-    const queryZh = selectedText.trim();
     setActiveHighlightZh(queryZh);
 
-    // 1. 优先从大模型输出的 BILINGUAL_MAP 精准映射表中匹配英文原句
+    // 1. 优先从大模型输出的 BILINGUAL_MAP 寻找精确对应句
     const currentMap = bilingualMapCache[pageNumber] || [];
     let matchedEnSentence = '';
+    let matchedZhSentence = '';
 
-    for (const entry of currentMap) {
-      if (entry.zh && entry.en && (entry.zh.includes(queryZh) || queryZh.includes(entry.zh))) {
-        matchedEnSentence = entry.en;
-        break;
-      }
-    }
-
-    if (matchedEnSentence) {
-      const cleanEnLower = matchedEnSentence.toLowerCase();
-      const enWords = cleanEnLower.match(/[a-zA-Z0-9'-]+/g) || [];
-      const foundItems = validItems.filter(item => {
-        const itemStr = (item.str || '').toLowerCase().trim();
-        if (!itemStr) return false;
-        return cleanEnLower.includes(itemStr) || enWords.some(w => w.length >= 3 && itemStr.includes(w));
-      });
-
-      if (foundItems.length > 0) {
-        matchedItems = foundItems;
-      }
-    }
-
-    // 2. 若无 map 命中，专有名词与英文字符优先精准全词匹配
-    if (matchedItems.length === 0) {
-      const cleanQuery = queryZh.toLowerCase();
-      const hasEnglishLetters = /[a-zA-Z]{2,}/.test(cleanQuery);
-
-      if (hasEnglishLetters) {
-        const words = cleanQuery.match(/[a-zA-Z0-9'-]+/g) || [];
-        const directMatches = validItems.filter(item => {
-          const itemStr = (item.str || '').toLowerCase();
-          return words.some(w => w.length >= 2 && (itemStr.includes(w) || w.includes(itemStr)));
-        });
-        if (directMatches.length > 0) {
-          matchedItems = directMatches;
+    // 若有上下文段落信息，优先匹配属于该段落的句子锚点
+    if (contextParagraph) {
+      for (const entry of currentMap) {
+        if (entry.zh && entry.en && (entry.zh.includes(queryZh) || queryZh.includes(entry.zh))) {
+          if (contextParagraph.includes(entry.zh) || entry.zh.includes(contextParagraph)) {
+            matchedEnSentence = entry.en;
+            matchedZhSentence = entry.zh;
+            break;
+          }
         }
       }
     }
 
-    // 3. 增强的自然句语义切分对齐
-    if (matchedItems.length === 0) {
-      const zhSentences = splitSentences(currentDocText, true);
-      const enRawText = validItems.map(item => item.str).join(' ');
-      const enSentences = splitSentences(enRawText, false);
-
-      let targetZhIndex = -1;
-      for (let i = 0; i < zhSentences.length; i++) {
-        if (zhSentences[i].text.includes(queryZh) || queryZh.includes(zhSentences[i].text)) {
-          targetZhIndex = i;
+    // 若未通过段落限定找到，按普通包含查找最匹配句
+    if (!matchedEnSentence) {
+      for (const entry of currentMap) {
+        if (entry.zh && entry.en && (entry.zh.includes(queryZh) || queryZh.includes(entry.zh))) {
+          matchedEnSentence = entry.en;
+          matchedZhSentence = entry.zh;
           break;
         }
       }
-
-      if (targetZhIndex >= 0 && enSentences.length > 0) {
-        const ratio = targetZhIndex / Math.max(1, zhSentences.length);
-        const mappedEnIndex = Math.min(enSentences.length - 1, Math.floor(ratio * enSentences.length));
-        const targetEnSentence = enSentences[mappedEnIndex];
-
-        let enCharCount = 0;
-        const matchedEnItems: any[] = [];
-        for (const item of validItems) {
-          const itemLen = (item.str || '').length;
-          const itemStart = enCharCount;
-          const itemEnd = enCharCount + itemLen;
-          if (itemEnd >= targetEnSentence.start && itemStart <= targetEnSentence.end) {
-            matchedEnItems.push(item);
-          }
-          enCharCount += itemLen + 1;
-        }
-
-        if (matchedEnItems.length > 0) {
-          matchedItems = matchedEnItems;
-        }
-      }
     }
 
-    // 4. 兜底策略：按字符百分比映射
+    if (matchedZhSentence) {
+      setActiveSentenceZh(matchedZhSentence);
+    } else {
+      setActiveSentenceZh(queryZh);
+    }
+
+    let matchedItems: any[] = [];
+
+    // 2. 使用连续滑动窗口单词流匹配英文原句，绝不跨段落或全页模糊匹配
+    if (matchedEnSentence) {
+      matchedItems = findContiguousItemsForSentence(matchedEnSentence, validItems);
+    }
+
+    // 3. 兜底：若是选取的英文短语（如专有名词或英文单词）
+    if (matchedItems.length === 0 && /[a-zA-Z]{3,}/.test(queryZh)) {
+      matchedItems = findContiguousItemsForSentence(queryZh, validItems);
+    }
+
+    // 若仍未匹配，清空高亮，坚决不进行全局泛化匹配
     if (matchedItems.length === 0) {
-      const index = currentDocText.indexOf(queryZh);
-      const totalLen = Math.max(1, currentDocText.length);
-      const startRatio = index >= 0 ? index / totalLen : 0.1;
-      const endRatio = index >= 0 ? (index + queryZh.length) / totalLen : startRatio + 0.1;
-
-      const startIndex = Math.max(0, Math.floor(startRatio * validItems.length));
-      const endIndex = Math.min(validItems.length, Math.max(startIndex + 1, Math.ceil(endRatio * validItems.length)));
-      matchedItems = validItems.slice(startIndex, endIndex);
+      setExactHighlightSpans([]);
+      return;
     }
 
-    // 将匹配的 items 转换为精准屏幕视口高光矩形
+    // 4. 将连续匹配的 items 转换为精准屏幕视口高光矩形
     const spans = matchedItems.map(item => {
       const x = item.transform[4];
       const y = item.transform[5];
-      const w = item.width || (item.str.length * 7);
-      const h = Math.abs(item.transform[3]) || item.height || 10;
+      const fontHeight = Math.abs(item.transform[3]) || Math.abs(item.transform[0]) || 12;
+      const w = item.width || (item.str.length * fontHeight * 0.55);
 
       const left = x * scale;
-      const top = (origHeight - y - h) * scale;
+      const top = (origHeight - y - fontHeight * 0.95) * scale;
       const width = w * scale;
-      const height = h * 1.18 * scale;
+      const height = fontHeight * 1.15 * scale;
 
       return { left, top, width, height };
     });
@@ -921,6 +979,13 @@ export default function PdfTranslator() {
       return;
     }
 
+    // 获取当前划选所在的段落文本，作为上下文锚点
+    const anchorNode = selection.anchorNode;
+    const pEl = anchorNode?.nodeType === Node.ELEMENT_NODE
+      ? (anchorNode as Element).closest('p')
+      : anchorNode?.parentElement?.closest('p');
+    const contextParagraph = pEl?.textContent || '';
+
     const range = selection.getRangeAt(0);
     const rect = range.getBoundingClientRect();
 
@@ -936,8 +1001,8 @@ export default function PdfTranslator() {
       clipId: existingClip?.id,
     });
 
-    // 触发语义级精准高亮 (松手常驻高亮，不自动淡出)
-    triggerExactHighlightForSelection(text);
+    // 触发语义级精准高亮 (传入段落上下文锚点，精准定位单一句子)
+    triggerExactHighlightForSelection(text, contextParagraph);
   };
 
   // 从左侧 PDF 划选英文文本，双向反查高亮右侧中文译文
@@ -945,7 +1010,9 @@ export default function PdfTranslator() {
     const selection = window.getSelection();
     if (!selection || selection.isCollapsed) return;
     const enText = selection.toString().trim();
-    if (enText.length < 2) return;
+    
+    // 必须大于等于 5 个字符且包含英文字母，杜绝点击空白或单字标点误触
+    if (enText.length < 5 || !/[a-zA-Z]{3,}/.test(enText)) return;
 
     const currentMap = bilingualMapCache[pageNumber] || [];
     let matchedZh = '';
@@ -969,23 +1036,22 @@ export default function PdfTranslator() {
   useEffect(() => {
     const handleGlobalMouseDown = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
+      // 保护工具栏、解释弹窗、侧边栏及其按钮的点击交互
       if (
         target.closest(`.${styles.floatingToolbar}`) || 
         target.closest(`.${styles.explainCardModal}`) ||
         target.closest(`.${styles.clipsSidebarToggle}`) ||
-        target.closest(`.${styles.clippedTextSpan}`) ||
-        target.closest(`.${styles.activeZhHighlightSpan}`)
+        target.closest(`.${styles.inlineClipsSidebar}`) ||
+        target.closest(`.${styles.topNavIconBtn}`)
       ) {
         return;
       }
-      const selection = window.getSelection();
-      if (!selection || selection.isCollapsed) {
-        setFloatingToolbar(null);
-        if (!target.closest(`.${styles.markdownWrapper}`) && !target.closest(`.${styles.pdfWrapper}`)) {
-          setExactHighlightSpans([]);
-          setActiveHighlightZh('');
-        }
-      }
+
+      // 用户点击任意空白页面或文本外区域，立即自然清除高亮与微岛浮窗
+      setFloatingToolbar(null);
+      setExactHighlightSpans([]);
+      setActiveHighlightZh('');
+      setActiveSentenceZh('');
     };
 
     window.addEventListener('mousedown', handleGlobalMouseDown);
@@ -1291,9 +1357,11 @@ export default function PdfTranslator() {
         </div>
       )}
 
-      {/* Left Pane - PDF Viewer */}
-      {!isImmersive && (
-        <div className={styles.leftPane} style={{ flexBasis: `calc(${leftPaneWidth}% - 6px)`, flexGrow: 0, flexShrink: 0 }}>
+      {/* Left Pane - PDF Viewer (常驻挂载，沉浸模式通过 hiddenPane 样式隐藏，消灭重新挂载闪屏) */}
+      <div 
+        className={`${styles.leftPane} ${isImmersive ? styles.hiddenPane : ''}`} 
+        style={{ flexBasis: `calc(${leftPaneWidth}% - 6px)`, flexGrow: 0, flexShrink: 0 }}
+      >
           {/* 左侧顶栏：统一 52px 高度与水平对齐，Lucide 矢量图标 */}
           <div className={styles.header}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0, flex: 1, marginRight: '8px' }}>
@@ -1440,17 +1508,14 @@ export default function PdfTranslator() {
             )}
           </div>
         </div>
-      )}
 
-      {/* Resizer handle */}
-      {!isImmersive && (
-        <div 
-          className={styles.resizer}
-          onMouseDown={() => setIsResizing(true)}
-          onDoubleClick={() => setLeftPaneWidth(50)}
-          data-tooltip="按住拖拽宽度，双击复位 50:50"
-        />
-      )}
+      {/* Resizer handle (常驻挂载，沉浸模式通过 hiddenPane 样式隐藏) */}
+      <div 
+        className={`${styles.resizer} ${isImmersive ? styles.hiddenPane : ''}`}
+        onMouseDown={() => setIsResizing(true)}
+        onDoubleClick={() => setLeftPaneWidth(50)}
+        data-tooltip="按住拖拽宽度，双击复位 50:50"
+      />
 
       {/* Right Pane - Translation */}
       <div 
@@ -1569,9 +1634,9 @@ export default function PdfTranslator() {
             <button
               type="button"
               className={styles.topNavIconBtn}
-              onClick={preTranslateNextPage}
+              onClick={() => preTranslatePipeline(pageNumber)}
               disabled={!file || pageNumber >= numPages || isPreTranslating || !!translationCache[pageNumber + 1]}
-              data-tooltip={translationCache[pageNumber + 1] ? '下一页翻译已就绪' : '预加载翻译下一页'}
+              data-tooltip={translationCache[pageNumber + 1] ? '后续页面预读已就绪' : '流水线预加载后续多页翻译'}
             >
               <FastForward size={15} />
             </button>
@@ -1603,9 +1668,8 @@ export default function PdfTranslator() {
             <span className={styles.clipsBadgeMini}>{clips.length}</span>
           </button>
 
-          {/* 译文主体视口 */}
+          {/* 译文主体视口 (复用容器 DOM，彻底消灭切换翻页透明度白屏跳闪) */}
           <div 
-            key={`md-page-${pageAnimKey}`}
             className={`${styles.markdownWrapper} ${styles.pageFadeIn}`}
             ref={markdownContainerRef}
             onMouseUp={handleMarkdownSelection}
@@ -1706,20 +1770,20 @@ export default function PdfTranslator() {
                           }
                         }
 
-                        // 2. 处理当前选中的双向对齐高亮段 (activeHighlightZh)
-                        if (activeHighlightZh && activeHighlightZh.length >= 2) {
+                        // 2. 处理当前选中的双向对齐高亮句 (精准仅高亮当前所属单一句子，杜绝全篇同名短词误涂)
+                        if (activeSentenceZh && activeSentenceZh.length >= 2) {
                           const next: React.ReactNode[] = [];
                           for (const s of segs) {
-                            if (typeof s === 'string' && s.includes(activeHighlightZh)) {
-                              const parts = s.split(activeHighlightZh);
+                            if (typeof s === 'string' && s.includes(activeSentenceZh)) {
+                              const parts = s.split(activeSentenceZh);
                               for (let i = 0; i < parts.length; i++) {
                                 if (i > 0) {
                                   next.push(
                                     <span
-                                      key={`hl-zh-${i}`}
-                                      className={styles.activeZhHighlightSpan}
+                                      key={`sent-zh-${i}`}
+                                      className={styles.activeZhSentenceSpan}
                                     >
-                                      {activeHighlightZh}
+                                      {activeSentenceZh}
                                     </span>
                                   );
                                 }
