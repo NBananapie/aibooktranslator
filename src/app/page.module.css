@@ -247,20 +247,13 @@
 
 .pdfWrapper {
   flex: 1;
-  overflow: auto;
+  overflow-y: scroll;
+  overflow-x: auto;
   position: relative;
   display: flex;
   justify-content: center;
   padding: 20px;
   background: rgba(0, 0, 0, 0.08);
-}
-
-.pdfPageContainer {
-  position: relative;
-  background: #ffffff;
-  border-radius: 4px;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12);
-  min-height: 500px;
 }
 
 .markdownWrapper {
