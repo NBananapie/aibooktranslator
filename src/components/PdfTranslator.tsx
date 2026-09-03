@@ -244,6 +244,40 @@ function findContiguousItemsForSentence(sentence: string, items: any[]): any[] {
   return [];
 }
 
+// 精准子句提取：当 LLM 将多句话合并为一条映射时，按标点精确截取与用户划选对应的英文子句，彻底杜绝连带扩选
+function extractSpecificEnForQuery(entryZh: string, entryEn: string, queryZh: string): string {
+  // 按句末标点拆分为分句
+  const zhSubSentences = entryZh.split(/(?<=[。！？\n])/).map(s => s.trim()).filter(Boolean);
+  const enSubSentences = entryEn.split(/(?<=[.!?\n])\s+/).map(s => s.trim()).filter(Boolean);
+
+  // 若中英文分句数量对齐 (如大模型合并了 2 句话)
+  if (zhSubSentences.length > 1 && zhSubSentences.length === enSubSentences.length) {
+    for (let i = 0; i < zhSubSentences.length; i++) {
+      if (zhSubSentences[i].includes(queryZh) || queryZh.includes(zhSubSentences[i])) {
+        return enSubSentences[i];
+      }
+    }
+  }
+
+  // 若数量不对齐但含有多个分句，计算相对比例定位
+  if (zhSubSentences.length > 1 && enSubSentences.length > 1) {
+    let matchedZhIdx = -1;
+    for (let i = 0; i < zhSubSentences.length; i++) {
+      if (zhSubSentences[i].includes(queryZh) || queryZh.includes(zhSubSentences[i])) {
+        matchedZhIdx = i;
+        break;
+      }
+    }
+    if (matchedZhIdx >= 0) {
+      const ratio = matchedZhIdx / zhSubSentences.length;
+      const targetEnIdx = Math.min(enSubSentences.length - 1, Math.floor(ratio * enSubSentences.length));
+      return enSubSentences[targetEnIdx];
+    }
+  }
+
+  return entryEn;
+}
+
 export default function PdfTranslator() {
   const { settings, activeFileId, theme, toggleTheme } = useAppContext();
   const router = useRouter();
@@ -321,6 +355,7 @@ export default function PdfTranslator() {
   const [isImmersive, setIsImmersive] = useState<boolean>(false);
   const [isResizing, setIsResizing] = useState<boolean>(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const leftPaneRef = useRef<HTMLDivElement>(null);
   const pdfWrapperRef = useRef<HTMLDivElement>(null);
   const markdownContainerRef = useRef<HTMLDivElement>(null);
   const [pdfRenderWidth, setPdfRenderWidth] = useState<number>(600);
@@ -348,19 +383,21 @@ export default function PdfTranslator() {
     return () => cancelAnimationFrame(rafId);
   }, []);
 
-  // 自适应动态监听左侧容器宽度
+  // 自适应动态监听左侧容器宽度 (监听无滚动条的 leftPane，彻底杜绝滚动条震荡造成的死循环与残影闪屏)
   useEffect(() => {
-    if (!pdfWrapperRef.current) return;
+    const targetEl = leftPaneRef.current || containerRef.current;
+    if (!targetEl) return;
+
     const updateWidth = () => {
-      if (pdfWrapperRef.current) {
-        const containerW = pdfWrapperRef.current.clientWidth;
+      if (targetEl) {
+        const containerW = targetEl.clientWidth;
         const calculatedWidth = Math.max(280, containerW - 48);
-        setPdfRenderWidth(calculatedWidth);
+        setPdfRenderWidth(prev => (Math.abs(prev - calculatedWidth) > 10 ? calculatedWidth : prev));
       }
     };
     updateWidth();
     const observer = new ResizeObserver(updateWidth);
-    observer.observe(pdfWrapperRef.current);
+    observer.observe(targetEl);
     return () => observer.disconnect();
   }, [leftPaneWidth, isImmersive]);
 
@@ -896,7 +933,7 @@ export default function PdfTranslator() {
       for (const entry of currentMap) {
         if (entry.zh && entry.en && (entry.zh.includes(queryZh) || queryZh.includes(entry.zh))) {
           if (contextParagraph.includes(entry.zh) || entry.zh.includes(contextParagraph)) {
-            matchedEnSentence = entry.en;
+            matchedEnSentence = extractSpecificEnForQuery(entry.zh, entry.en, queryZh);
             matchedZhSentence = entry.zh;
             break;
           }
@@ -908,7 +945,7 @@ export default function PdfTranslator() {
     if (!matchedEnSentence) {
       for (const entry of currentMap) {
         if (entry.zh && entry.en && (entry.zh.includes(queryZh) || queryZh.includes(entry.zh))) {
-          matchedEnSentence = entry.en;
+          matchedEnSentence = extractSpecificEnForQuery(entry.zh, entry.en, queryZh);
           matchedZhSentence = entry.zh;
           break;
         }
@@ -1359,6 +1396,7 @@ export default function PdfTranslator() {
 
       {/* Left Pane - PDF Viewer (常驻挂载，沉浸模式通过 hiddenPane 样式隐藏，消灭重新挂载闪屏) */}
       <div 
+        ref={leftPaneRef}
         className={`${styles.leftPane} ${isImmersive ? styles.hiddenPane : ''}`} 
         style={{ flexBasis: `calc(${leftPaneWidth}% - 6px)`, flexGrow: 0, flexShrink: 0 }}
       >
@@ -1768,32 +1806,6 @@ export default function PdfTranslator() {
                             }
                             segs = next;
                           }
-                        }
-
-                        // 2. 处理当前选中的双向对齐高亮句 (精准仅高亮当前所属单一句子，杜绝全篇同名短词误涂)
-                        if (activeSentenceZh && activeSentenceZh.length >= 2) {
-                          const next: React.ReactNode[] = [];
-                          for (const s of segs) {
-                            if (typeof s === 'string' && s.includes(activeSentenceZh)) {
-                              const parts = s.split(activeSentenceZh);
-                              for (let i = 0; i < parts.length; i++) {
-                                if (i > 0) {
-                                  next.push(
-                                    <span
-                                      key={`sent-zh-${i}`}
-                                      className={styles.activeZhSentenceSpan}
-                                    >
-                                      {activeSentenceZh}
-                                    </span>
-                                  );
-                                }
-                                if (parts[i]) next.push(parts[i]);
-                              }
-                            } else {
-                              next.push(s);
-                            }
-                          }
-                          segs = next;
                         }
 
                         return segs;
