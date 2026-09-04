@@ -322,6 +322,7 @@ export default function PdfTranslator() {
   const [activeHighlightZh, setActiveHighlightZh] = useState<string>('');
   const [activeSentenceZh, setActiveSentenceZh] = useState<string>('');
   const highlightTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const pendingClearRef = useRef<boolean>(false);
   const translationCacheRef = useRef<Record<number, string>>({});
   const isPreTranslatingRef = useRef<boolean>(false);
 
@@ -901,6 +902,14 @@ export default function PdfTranslator() {
     };
   }, [isResizing]);
 
+  // 统一清空划词高亮与悬浮工具栏的函数
+  const clearHighlights = useCallback(() => {
+    setFloatingToolbar(null);
+    setExactHighlightSpans([]);
+    setActiveHighlightZh('');
+    setActiveSentenceZh('');
+  }, []);
+
   // === 核心需求1: 基于大模型双向对齐映射的 100% 精确语义高亮 ===
   const triggerExactHighlightForSelection = (selectedText: string, contextParagraph?: string) => {
     const queryZh = selectedText.trim();
@@ -1010,6 +1019,9 @@ export default function PdfTranslator() {
       return;
     }
 
+    // 有效选区产生，取消 mousedown 设置的待清空标记
+    pendingClearRef.current = false;
+
     const text = selection.toString().trim();
     if (text.length < 1) {
       setFloatingToolbar(null);
@@ -1051,6 +1063,9 @@ export default function PdfTranslator() {
     // 必须大于等于 5 个字符且包含英文字母，杜绝点击空白或单字标点误触
     if (enText.length < 5 || !/[a-zA-Z]{3,}/.test(enText)) return;
 
+    // 有效选区产生，取消 mousedown 设置的待清空标记
+    pendingClearRef.current = false;
+
     const currentMap = bilingualMapCache[pageNumber] || [];
     let matchedZh = '';
     const cleanEn = enText.toLowerCase();
@@ -1084,16 +1099,20 @@ export default function PdfTranslator() {
         return;
       }
 
-      // 用户点击任意空白页面或文本外区域，立即自然清除高亮与微岛浮窗
-      setFloatingToolbar(null);
-      setExactHighlightSpans([]);
-      setActiveHighlightZh('');
-      setActiveSentenceZh('');
+      // 标记为待清空，延迟到下一帧执行
+      // 如果 mouseup 产生了有效选区，handleMarkdownSelection/handlePdfSelection 会取消此标记
+      pendingClearRef.current = true;
+      requestAnimationFrame(() => {
+        if (pendingClearRef.current) {
+          clearHighlights();
+          pendingClearRef.current = false;
+        }
+      });
     };
 
     window.addEventListener('mousedown', handleGlobalMouseDown);
     return () => window.removeEventListener('mousedown', handleGlobalMouseDown);
-  }, []);
+  }, [clearHighlights]);
 
   // 剪藏文字与飞入动效
   const handleAddClip = async () => {
@@ -1777,7 +1796,33 @@ export default function PdfTranslator() {
                       const formatTextSegments = (rawText: string) => {
                         let segs: React.ReactNode[] = [rawText];
 
-                        // 1. 优先处理已剪藏下划线
+                        // 1. 活跃选中句子高亮（琥珀金底色 - 划词对照翻译反馈）
+                        if (activeSentenceZh && activeSentenceZh.length > 0) {
+                          const next: React.ReactNode[] = [];
+                          for (const s of segs) {
+                            if (typeof s === 'string' && s.includes(activeSentenceZh)) {
+                              const parts = s.split(activeSentenceZh);
+                              for (let i = 0; i < parts.length; i++) {
+                                if (i > 0) {
+                                  next.push(
+                                    <mark
+                                      key={`zh-hl-${i}`}
+                                      className={styles.activeZhHighlightSpan}
+                                    >
+                                      {activeSentenceZh}
+                                    </mark>
+                                  );
+                                }
+                                if (parts[i]) next.push(parts[i]);
+                              }
+                            } else {
+                              next.push(s);
+                            }
+                          }
+                          segs = next;
+                        }
+
+                        // 2. 处理已剪藏下划线
                         if (currentPageClips.length > 0) {
                           for (const clip of currentPageClips) {
                             if (!clip.text) continue;
