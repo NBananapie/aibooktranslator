@@ -1,5 +1,3 @@
-import { NextResponse } from 'next/server';
-
 export const runtime = 'edge';
 
 const BILINGUAL_MAP_INSTRUCTION = `
@@ -85,7 +83,7 @@ async function handleGeminiStream(params: {
     } catch {
       errorMessage = `Gemini 错误 (${response.status}): ${errorText.slice(0, 200)}`;
     }
-    return NextResponse.json({ error: errorMessage, details: errorText }, { status: response.status });
+    return Response.json({ error: errorMessage, details: errorText }, { status: response.status });
   }
 
   const stream = new ReadableStream({
@@ -196,7 +194,7 @@ async function handleOpenAIStream(params: {
     } catch {
       errorMessage = `API 错误 (${response.status}): ${errorText.slice(0, 200)}`;
     }
-    return NextResponse.json({ error: errorMessage, details: errorText }, { status: response.status });
+    return Response.json({ error: errorMessage, details: errorText }, { status: response.status });
   }
 
   const stream = new ReadableStream({
@@ -267,14 +265,14 @@ export async function POST(req: Request) {
     } = body;
 
     if (!text) {
-      return NextResponse.json({ error: '未提供待翻译文本' }, { status: 400 });
+      return Response.json({ error: '未提供待翻译文本' }, { status: 400 });
     }
 
     const allowServerKey = process.env.ALLOW_SERVER_API_KEY === 'true';
     const apiKey = clientApiKey || (allowServerKey ? process.env.MINIMAX_API_KEY : undefined);
 
     if (!apiKey) {
-      return NextResponse.json(
+      return Response.json(
         { error: '请先在「设置」里填入您的 API Key（数据仅在本地，不会上传）' },
         { status: 401 }
       );
@@ -312,7 +310,7 @@ export async function POST(req: Request) {
     });
   } catch (error: any) {
     console.error('Translate Route Error:', error);
-    return NextResponse.json(
+    return Response.json(
       { error: `翻译服务异常: ${error.message || error}` },
       { status: 500 }
     );
