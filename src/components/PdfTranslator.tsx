@@ -19,6 +19,7 @@ import {
   deleteHistoryClip 
 } from '@/lib/db';
 import { useRouter } from 'next/navigation';
+import { executeTranslateStream, executeExplainStream } from '@/lib/llmClient';
 import {
   ArrowLeft,
   Pencil,
@@ -570,18 +571,14 @@ export default function PdfTranslator() {
     setDisplayedText('');
 
     try {
-      const response = await fetch('/api/translate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          text: sourceText, 
-          targetLanguage: '中文',
-          apiKey: settings.apiKey,
-          baseUrl: settings.baseUrl,
-          model: settings.model,
-          provider: settings.provider,
-          customPrompt: settings.customPrompt
-        }),
+      const response = await executeTranslateStream({
+        text: sourceText,
+        targetLanguage: '中文',
+        apiKey: settings.apiKey,
+        baseUrl: settings.baseUrl,
+        model: settings.model,
+        provider: settings.provider,
+        customPrompt: settings.customPrompt,
         signal: controller.signal,
       });
 
@@ -789,18 +786,14 @@ export default function PdfTranslator() {
 
           if (!extractedText.trim()) continue;
 
-          const response = await fetch('/api/translate', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ 
-              text: extractedText, 
-              targetLanguage: '中文',
-              apiKey: settings.apiKey,
-              baseUrl: settings.baseUrl,
-              model: settings.model,
-              provider: settings.provider,
-              customPrompt: settings.customPrompt
-            }),
+          const response = await executeTranslateStream({
+            text: extractedText,
+            targetLanguage: '中文',
+            apiKey: settings.apiKey,
+            baseUrl: settings.baseUrl,
+            model: settings.model,
+            provider: settings.provider,
+            customPrompt: settings.customPrompt,
           });
 
           if (response.ok && response.body) {
@@ -1244,17 +1237,13 @@ export default function PdfTranslator() {
     setIsExplainLoading(true);
 
     try {
-      const response = await fetch('/api/explain', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          selectedText: textToExplain,
-          contextText: displayedText || '',
-          apiKey: settings.apiKey,
-          baseUrl: settings.baseUrl,
-          model: settings.model,
-          provider: settings.provider,
-        }),
+      const response = await executeExplainStream({
+        selectedText: textToExplain,
+        contextText: displayedText || '',
+        apiKey: settings.apiKey,
+        baseUrl: settings.baseUrl,
+        model: settings.model,
+        provider: settings.provider,
       });
 
       if (!response.ok || !response.body) {
@@ -1298,19 +1287,15 @@ export default function PdfTranslator() {
     setExplainHistory(newHistory);
 
     try {
-      const response = await fetch('/api/explain', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          selectedText: explainTargetText,
-          contextText: displayedText || '',
-          question,
-          history: newHistory,
-          apiKey: settings.apiKey,
-          baseUrl: settings.baseUrl,
-          model: settings.model,
-          provider: settings.provider,
-        }),
+      const response = await executeExplainStream({
+        selectedText: explainTargetText,
+        contextText: displayedText || '',
+        question,
+        history: newHistory,
+        apiKey: settings.apiKey,
+        baseUrl: settings.baseUrl,
+        model: settings.model,
+        provider: settings.provider,
       });
 
       if (!response.ok || !response.body) {
