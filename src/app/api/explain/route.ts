@@ -1,5 +1,3 @@
-import { NextResponse } from 'next/server';
-
 export const runtime = 'edge';
 
 function buildExplainSystemPrompt() {
@@ -58,7 +56,7 @@ async function handleGeminiExplainStream(params: {
     } catch {
       errorMessage = `Gemini 错误 (${response.status}): ${errorText.slice(0, 200)}`;
     }
-    return NextResponse.json({ error: errorMessage, details: errorText }, { status: response.status });
+    return Response.json({ error: errorMessage, details: errorText }, { status: response.status });
   }
 
   const stream = new ReadableStream({
@@ -165,7 +163,7 @@ async function handleOpenAIExplainStream(params: {
     } catch {
       errorMessage = `API 错误 (${response.status}): ${errorText.slice(0, 200)}`;
     }
-    return NextResponse.json({ error: errorMessage, details: errorText }, { status: response.status });
+    return Response.json({ error: errorMessage, details: errorText }, { status: response.status });
   }
 
   const stream = new ReadableStream({
@@ -237,14 +235,14 @@ export async function POST(req: Request) {
     } = body;
 
     if (!selectedText && !question) {
-      return NextResponse.json({ error: '未提供待解释文本或追问内容' }, { status: 400 });
+      return Response.json({ error: '未提供待解释文本或追问内容' }, { status: 400 });
     }
 
     const allowServerKey = process.env.ALLOW_SERVER_API_KEY === 'true';
     const apiKey = clientApiKey || (allowServerKey ? process.env.MINIMAX_API_KEY : undefined);
 
     if (!apiKey) {
-      return NextResponse.json(
+      return Response.json(
         { error: '请先在「设置」中配置 API Key（不会上传第三方）' },
         { status: 401 }
       );
@@ -315,7 +313,7 @@ export async function POST(req: Request) {
     });
   } catch (error: any) {
     console.error('Explain Route Error:', error);
-    return NextResponse.json(
+    return Response.json(
       { error: `解释服务异常: ${error.message || error}` },
       { status: 500 }
     );

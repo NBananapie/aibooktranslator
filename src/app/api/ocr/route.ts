@@ -1,5 +1,3 @@
-import { NextResponse } from 'next/server';
-
 export const runtime = 'edge';
 
 // Web 标准 Base64 转 Uint8Array (Edge Runtime 兼容)
@@ -283,12 +281,12 @@ export async function POST(req: Request) {
     } = body;
 
     if (!image) {
-      return NextResponse.json({ error: '未提供图片数据' }, { status: 400 });
+      return Response.json({ error: '未提供图片数据' }, { status: 400 });
     }
 
     const token = apiToken?.trim() || process.env.PADDLEOCR_ACCESS_TOKEN?.trim();
     if (!token) {
-      return NextResponse.json(
+      return Response.json(
         {
           error:
             '请先在「设置」中配置百度飞桨 AI Studio OCR Token（可前往 https://aistudio.baidu.com/paddleocr 免费注册并获取）。',
@@ -308,7 +306,7 @@ export async function POST(req: Request) {
     const result = await runPaddleOcrJob(token, model, imageBytes, apiUrl);
 
     if (!result.text.trim()) {
-      return NextResponse.json({
+      return Response.json({
         text: '',
         markdown: '',
         raw: result.raw,
@@ -316,14 +314,14 @@ export async function POST(req: Request) {
       });
     }
 
-    return NextResponse.json({
+    return Response.json({
       text: result.text,
       markdown: result.text,
       raw: result.raw,
     });
   } catch (error: any) {
     console.error('OCR Route Error:', error);
-    return NextResponse.json(
+    return Response.json(
       { error: `OCR 处理发生异常: ${error.message || error}` },
       { status: 500 }
     );
