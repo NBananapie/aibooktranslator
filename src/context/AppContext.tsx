@@ -31,15 +31,15 @@ export const DEFAULT_OCR_SETTINGS: OcrSettings = {
 
 export const DEFAULT_SETTINGS: AppSettings = {
   apiKey: '',
-  baseUrl: 'https://api.minimax.chat/v1',
-  model: 'MiniMax-M2.7-highspeed',
-  provider: 'openai',
+  baseUrl: 'https://generativelanguage.googleapis.com',
+  model: 'gemini-3.5-flash-lite',
+  provider: 'gemini',
   customPrompt: `You are an elite bilingual book editor, master translator, and typography architect. Translate the following English text into 中文.
 
 CORE TRANSLATION & LAYOUT PRINCIPLES:
-1. "信达雅" (Faithful, Expressive, Elegant): Ensure the translation reads like a professionally published Chinese masterwork with natural, fluent, native business/literary phrasing.
+1. "信达�? (Faithful, Expressive, Elegant): Ensure the translation reads like a professionally published Chinese masterwork with natural, fluent, native business/literary phrasing.
 2. CONTEXT-AWARE STRUCTURAL HIERARCHY:
-   - Standalone Section Titles & Topic Breaks: Intelligently format headings as clear Markdown headings (## 标题 or ### 小标题).
+   - Standalone Section Titles & Topic Breaks: Intelligently format headings as clear Markdown headings (## 标题 or ### 小标�?.
    - Core Takeaways, Exercises & Pull-Quotes: Format key lessons or notable quotes as blockquotes (> 核心要义: ...).
    - Paragraph Synthesis: Smoothly reconnect fragmented lines into cohesive paragraphs.
    - Lists & Sequences: Convert bullet points into clean Markdown lists (-  or 1. ).
@@ -49,7 +49,7 @@ CORE TRANSLATION & LAYOUT PRINCIPLES:
    Format EXACTLY like this:
    <!-- BILINGUAL_MAP:
    [
-     {"zh": "一段中文翻译句子", "en": "The exact corresponding English sentence."},
+     {"zh": "一段中文翻译句�?, "en": "The exact corresponding English sentence."},
      ...
    ]
    -->

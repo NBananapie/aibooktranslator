@@ -239,7 +239,11 @@ export async function POST(req: Request) {
     }
 
     const allowServerKey = process.env.ALLOW_SERVER_API_KEY === 'true';
-    const apiKey = clientApiKey || (allowServerKey ? process.env.MINIMAX_API_KEY : undefined);
+    const serverKey = process.env.API_KEY || process.env.DASHSCOPE_API_KEY || process.env.MINIMAX_API_KEY;
+    const serverBaseUrl = process.env.BASE_URL || (process.env.DASHSCOPE_API_KEY ? 'https://dashscope.aliyuncs.com/compatible-mode/v1' : 'https://api.minimax.chat/v1');
+    const serverModel = process.env.MODEL || (process.env.DASHSCOPE_API_KEY ? 'qwen-plus' : 'MiniMax-M2.7-highspeed');
+
+    const apiKey = (clientApiKey && clientApiKey.trim()) ? clientApiKey.trim() : (allowServerKey ? serverKey : undefined);
 
     if (!apiKey) {
       return Response.json(
@@ -265,7 +269,7 @@ export async function POST(req: Request) {
 
     if (isGemini) {
       const baseUrl = clientBaseUrl || 'https://generativelanguage.googleapis.com';
-      const model = (clientModel && clientModel.trim()) || 'gemini-3.5-flash-lite';
+      const model = ((clientModel && clientModel.trim()) || 'gemini-3.5-flash-lite').toLowerCase();
 
       const contents: any[] = [];
       if (Array.isArray(history) && history.length > 0) {
@@ -291,8 +295,8 @@ export async function POST(req: Request) {
     }
 
     // OpenAI 兼容协议
-    const baseUrl = clientBaseUrl || process.env.MINIMAX_BASE_URL || 'https://api.minimax.chat/v1';
-    const model = clientModel || process.env.TRANSLATE_MODEL || 'MiniMax-M2.7-highspeed';
+    const baseUrl = (clientApiKey && clientApiKey.trim() && clientBaseUrl) ? clientBaseUrl.trim() : serverBaseUrl;
+    const model = (clientApiKey && clientApiKey.trim() && clientModel) ? clientModel.trim() : serverModel;
 
     const messages: { role: string; content: string }[] = [{ role: 'system', content: systemPrompt }];
     if (Array.isArray(history) && history.length > 0) {

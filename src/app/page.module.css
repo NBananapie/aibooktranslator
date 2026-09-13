@@ -145,6 +145,35 @@
   box-shadow: 0 2px 8px var(--primary-glow);
 }
 
+.topNavIconBtnCached {
+  background: rgba(16, 185, 129, 0.12) !important;
+  color: #10b981 !important;
+  border-color: rgba(16, 185, 129, 0.35) !important;
+  box-shadow: 0 2px 8px rgba(16, 185, 129, 0.2);
+}
+
+.topNavIconBtnCached:hover:not(:disabled) {
+  background: rgba(16, 185, 129, 0.22) !important;
+  border-color: #10b981 !important;
+  color: #10b981 !important;
+}
+
+.topNavIconBtnPreloading {
+  background: var(--primary-surface) !important;
+  border-color: var(--primary) !important;
+  color: var(--primary) !important;
+  animation: pulseGlow 1.5s infinite;
+}
+
+@keyframes pulseGlow {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 0 4px rgba(245, 158, 11, 0);
+  }
+}
+
 /* === BUTTONS & CONTROLS === */
 
 .btn {
@@ -494,6 +523,11 @@
 
 @keyframes spin {
   to { transform: rotate(360deg); }
+}
+
+.spinAnim {
+  animation: spin 0.85s linear infinite;
+  transform-origin: center center;
 }
 
 /* === HOME PAGE STYLES === */
@@ -954,7 +988,6 @@
   }
 }
 
-/* === 划词悬浮微岛工具栏 (Floating Squircle Toolbar) === */
 .floatingToolbar {
   position: fixed;
   z-index: 1000;
@@ -968,20 +1001,18 @@
   box-shadow: 0 16px 36px rgba(0, 0, 0, 0.5), 0 0 16px var(--primary-glow);
   backdrop-filter: blur(24px);
   -webkit-backdrop-filter: blur(24px);
-  transform: translate(-50%, -100%);
-  margin-top: -10px;
-  animation: popInCapsule 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+  animation: toolbarFadeIn 0.15s cubic-bezier(0.16, 1, 0.3, 1);
   user-select: none;
 }
 
-@keyframes popInCapsule {
+@keyframes toolbarFadeIn {
   from {
     opacity: 0;
-    transform: translate(-50%, -85%) scale(0.92);
+    scale: 0.94;
   }
   to {
     opacity: 1;
-    transform: translate(-50%, -100%) scale(1);
+    scale: 1;
   }
 }
 
@@ -1031,13 +1062,20 @@
   border: 1px solid var(--primary);
   color: var(--primary);
   padding: 8px 14px;
-  border-radius: 12px;
+  border-radius: 10px;
   font-size: 13px;
   font-weight: 600;
-  box-shadow: 0 8px 30px var(--primary-glow);
+  box-shadow: 0 8px 24px var(--primary-glow);
   backdrop-filter: blur(12px);
-  transition: all 0.65s cubic-bezier(0.16, 1, 0.3, 1);
+  -webkit-backdrop-filter: blur(12px);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 260px;
+  box-sizing: border-box;
   transform-origin: center center;
+  transition: transform 0.5s cubic-bezier(0.25, 1, 0.5, 1), opacity 0.5s cubic-bezier(0.25, 1, 0.5, 1);
+  will-change: transform, opacity;
 }
 
 /* === 剪藏高亮划线与状态表示 === */
@@ -1332,37 +1370,23 @@
 /* === 原文精准词对词划词高亮 (Exact Highlight Spans) === */
 .pdfExactHighlightSpan {
   position: absolute;
-  background: rgba(245, 158, 11, 0.42);
-  border-bottom: 2px solid var(--primary);
+  background: rgba(245, 158, 11, 0.40);
+  border-bottom: 2px solid #f59e0b;
   border-radius: 3px;
-  box-shadow: 0 0 10px var(--primary-glow);
+  box-shadow: 0 1px 4px rgba(245, 158, 11, 0.3);
   pointer-events: none;
-  transition: all 0.2s ease;
-  animation: exactPulse 1.8s infinite ease-in-out;
   z-index: 12;
 }
 
 /* === 译文对应段落/句子常驻琥珀金高亮 === */
 .activeZhHighlightSpan {
-  background: rgba(245, 158, 11, 0.25);
-  border-bottom: 2px solid var(--primary);
+  background: rgba(245, 158, 11, 0.28);
+  border-bottom: 2px solid #f59e0b;
   border-radius: 3px;
   padding: 1px 4px;
   box-shadow: 0 0 8px rgba(245, 158, 11, 0.25);
   color: inherit;
   display: inline;
-  transition: all 0.2s ease;
-}
-
-@keyframes exactPulse {
-  0%, 100% {
-    background: rgba(245, 158, 11, 0.38);
-    box-shadow: 0 0 8px var(--primary-glow);
-  }
-  50% {
-    background: rgba(245, 158, 11, 0.58);
-    box-shadow: 0 0 16px var(--primary-glow);
-  }
 }
 
 /* === 平级分栏布局与右侧小三角伸缩手柄 === */
@@ -1451,15 +1475,107 @@
   transition: opacity 0.15s ease;
 }
 
-/* === 译文对应句子常驻高亮 === */
+/* === 译文对应句子常驻高亮 (丝滑琥珀金高光带平滑呼吸动效) === */
 .activeZhSentenceSpan {
-  background: rgba(245, 158, 11, 0.18);
-  border-bottom: 2px solid var(--primary);
+  background: rgba(245, 158, 11, 0.28);
+  border-bottom: 2px solid #f59e0b;
   border-radius: 4px;
-  padding: 1px 4px;
-  transition: background 0.18s ease;
-  box-shadow: 0 0 8px rgba(245, 158, 11, 0.2);
+  padding: 2px 5px;
+  margin: 0 1px;
+  box-shadow: 0 0 8px rgba(245, 158, 11, 0.25);
   display: inline;
+  color: inherit;
+}
+
+/* === 双语对照几何覆盖层与悬浮联动 === */
+.pdfBlockOverlay {
+  position: absolute;
+  pointer-events: none;
+  border-radius: 6px;
+  border: 1.5px solid transparent;
+  transition: border-color 0.12s ease, background-color 0.12s ease;
+  z-index: 5;
+}
+
+.pdfBlockHovered {
+  background: rgba(59, 130, 246, 0.08);
+  border-color: rgba(59, 130, 246, 0.5);
+  box-shadow: 0 0 10px rgba(59, 130, 246, 0.2);
+}
+
+/* === 沉浸式段落卡片流（1:1 语义锚定与行高镜像） === */
+.bilingualBlockCard {
+  position: relative;
+  padding: 12px 16px;
+  border-radius: 10px;
+  border: 1px solid var(--glass-border-subtle, rgba(255, 255, 255, 0.05));
+  background: var(--surface-1, rgba(255, 255, 255, 0.02));
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  box-sizing: border-box;
+}
+
+.bilingualBlockCard:hover {
+  border-color: var(--primary-border, rgba(59, 130, 246, 0.3));
+  background: var(--primary-surface, rgba(59, 130, 246, 0.04));
+}
+
+.bilingualBlockActive {
+  border-color: var(--primary, #3b82f6) !important;
+  background: var(--primary-surface, rgba(59, 130, 246, 0.08)) !important;
+  box-shadow: 0 4px 16px rgba(59, 130, 246, 0.15);
+}
+
+.bilingualBlockHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+  opacity: 0.5;
+  transition: opacity 0.2s ease;
+}
+
+.bilingualBlockCard:hover .bilingualBlockHeader,
+.bilingualBlockActive .bilingualBlockHeader {
+  opacity: 1;
+}
+
+.bilingualBlockBadge {
+  font-size: 11px;
+  font-family: var(--font-mono, monospace);
+  color: var(--text-muted, #94a3b8);
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+
+.bilingualBlockActionBtn {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.1));
+  color: var(--primary, #3b82f6);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.bilingualBlockActionBtn:hover {
+  background: var(--primary, #3b82f6);
+  color: #ffffff;
+  border-color: var(--primary, #3b82f6);
+}
+
+.bilingualBlockContent {
+  font-size: inherit;
+  line-height: inherit;
+  color: var(--foreground);
+}
+
+.bilingualBlockContent p {
+  margin: 0;
+}
+
+.bilingualBlockContent p + p {
+  margin-top: 8px;
 }
 
 
