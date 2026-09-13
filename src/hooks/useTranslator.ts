@@ -134,13 +134,10 @@ export function useTranslator(options: UseTranslatorOptions) {
       const raw = cached;
       fullTextRef.current = raw;
       lastParsedRawRef.current = raw;
-      const { blocks, cleanMarkdown, alignmentMap } = parseBlockTranslation(raw, sourceBlocks);
-      setTargetBlocks(blocks);
+      const { cleanMarkdown } = parseTranslationOutput(raw);
+      setTargetBlocks([]);
       setTranslatedText(cleanMarkdown);
       setDisplayedText(cleanMarkdown);
-      if (alignmentMap.length > 0 && onBilingualMapExtracted) {
-        onBilingualMapExtracted(pageNumber, alignmentMap);
-      }
     } else {
       fullTextRef.current = '';
       setTranslatedText('');
@@ -154,11 +151,15 @@ export function useTranslator(options: UseTranslatorOptions) {
   useEffect(() => {
     translationCacheRef.current = translationCache;
     if (dbRecord && Object.keys(translationCache).length > 0) {
-      const updatedRecord = { ...dbRecord, translations: translationCache };
+      const updatedRecord = {
+        ...dbRecord,
+        translations: translationCache,
+        totalPages: dbRecord.totalPages || numPages || 0,
+      };
       setDbRecord(updatedRecord);
       saveHistoryRecord(updatedRecord).catch(e => console.error('Save history error', e));
     }
-  }, [translationCache]);
+  }, [translationCache, numPages]);
 
   // 4. 执行翻译文本流
   const executeTranslateText = async (sourceText: string, targetPage: number) => {
@@ -212,21 +213,30 @@ export function useTranslator(options: UseTranslatorOptions) {
           currentRawText += chunk;
           if (currentPageRef.current === targetPage) {
             fullTextRef.current = currentRawText;
+            // 实时过滤思考标签并进行流式渲染，呈现打字机逐字输出效果
+            const streamDisplay = currentRawText
+              .replace(/<think>[\s\S]*?(<\/think>|$)/g, '')
+              .replace(/<!--\s*BILINGUAL_MAP[\s\S]*$/i, '')
+              .trim();
+            if (streamDisplay) {
+              setDisplayedText(streamDisplay);
+            }
           }
         }
       }
 
-      const { blocks, cleanMarkdown, alignmentMap } = parseBlockTranslation(currentRawText, sourceBlocks);
+      // 流式接收完毕后，清洗最终文本并写入缓存
+      const finalClean = currentRawText
+        .replace(/<think>[\s\S]*?(<\/think>|$)/g, '')
+        .replace(/<!--\s*BILINGUAL_MAP[\s\S]*$/i, '')
+        .trim();
 
       if (currentPageRef.current === targetPage) {
-        setTargetBlocks(blocks);
-        setTranslatedText(cleanMarkdown);
-        setDisplayedText(cleanMarkdown);
-        if (alignmentMap.length > 0 && onBilingualMapExtracted) {
-          onBilingualMapExtracted(targetPage, alignmentMap);
-        }
+        setTargetBlocks([]);
+        setTranslatedText(finalClean);
+        setDisplayedText(finalClean);
       }
-      setTranslationCache(prev => ({ ...prev, [targetPage]: currentRawText }));
+      setTranslationCache(prev => ({ ...prev, [targetPage]: finalClean }));
     } catch (err: any) {
       if (err.name === 'AbortError') return;
       console.error(err);
@@ -260,7 +270,7 @@ export function useTranslator(options: UseTranslatorOptions) {
       try {
         let promptText = '';
         if (sourceBlocks && sourceBlocks.length > 0) {
-          promptText = formatSourceBlocksForPrompt(sourceBlocks);
+          promptText = sourceBlocks.map(b => b.text).join('\n\n');
         } else {
           const doc = await getPdfDoc();
           if (!doc) {
@@ -330,7 +340,7 @@ export function useTranslator(options: UseTranslatorOptions) {
             );
             const promptText =
               pageBlocks.length > 0
-                ? formatSourceBlocksForPrompt(pageBlocks)
+                ? pageBlocks.map(b => b.text).join('\n\n')
                 : extractPdfTextWithHierarchy(textContent.items as any[]);
 
             // 若后续页无原生文本（空白/纯图片），直接跳过预读，严禁在后台静默跑 OCR

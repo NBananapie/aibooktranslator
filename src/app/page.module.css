@@ -1378,6 +1378,24 @@
   z-index: 12;
 }
 
+/* === 原文已剪藏虚线下划线标记 (与译文已剪藏完全对称) === */
+.pdfClippedDashedSpan {
+  position: absolute;
+  border-bottom: 2px dashed #f59e0b;
+  background: rgba(245, 158, 11, 0.14);
+  border-radius: 2px;
+  cursor: pointer;
+  pointer-events: auto;
+  z-index: 15;
+  transition: all 0.16s ease;
+}
+
+.pdfClippedDashedSpan:hover {
+  background: rgba(245, 158, 11, 0.28);
+  border-bottom: 2px dashed #d97706;
+  box-shadow: 0 0 8px rgba(245, 158, 11, 0.3);
+}
+
 /* === 译文对应段落/句子常驻琥珀金高亮 === */
 .activeZhHighlightSpan {
   background: rgba(245, 158, 11, 0.28);

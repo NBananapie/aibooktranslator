@@ -27,35 +27,22 @@ export interface ExplainParams {
   signal?: AbortSignal;
 }
 
-const BILINGUAL_MAP_INSTRUCTION = `
-
-PRECISE SENTENCE-LEVEL BILINGUAL ALIGNMENT MAP:
-At the very end of your response, after the complete translated markdown text, append a hidden JSON comment block mapping each translated sentence to its original English source sentence for bilingual alignment.
-Format EXACTLY like this:
-<!-- BILINGUAL_MAP:
-[
-  {"zh": "一段中文翻译句子", "en": "The exact corresponding English sentence."},
-  ...
-]
--->
-Output ONLY the translated Markdown followed by the hidden BILINGUAL_MAP comment block. Do NOT include conversational filler.`;
-
 function buildSystemPrompt(customPrompt?: string, targetLanguage = '中文') {
-  const basePrompt = (customPrompt && customPrompt.trim()) ? customPrompt.trim() : `You are an elite bilingual book editor, master translator, and typography architect. Translate the following English text into ${targetLanguage}.
-
-CORE TRANSLATION & LAYOUT PRINCIPLES:
-1. "信达雅" (Faithful, Expressive, Elegant): Ensure the translation reads like a professionally published Chinese masterwork with natural, fluent, native business/literary phrasing.
-2. CONTEXT-AWARE STRUCTURAL HIERARCHY:
-   - Standalone Section Titles & Topic Breaks: Intelligently format headings as clear Markdown headings (\`## 标题\` or \`### 小标题\`).
-   - Core Takeaways, Exercises & Pull-Quotes: Format key lessons or notable quotes as blockquotes (\`> 核心要义: ...\`).
-   - Paragraph Synthesis: Smoothly reconnect fragmented lines into cohesive paragraphs.
-   - Lists & Sequences: Convert bullet points into clean Markdown lists (\`- \` or \`1. \`).
-   - Key Concepts & Emphasis: Use \`**bold**\` for critical terms.`;
-
-  if (!basePrompt.includes('BILINGUAL_MAP')) {
-    return `${basePrompt}\n\n${BILINGUAL_MAP_INSTRUCTION}`;
+  if (customPrompt && customPrompt.trim()) {
+    return customPrompt.trim();
   }
-  return basePrompt;
+  return `You are an elite bilingual book editor, master translator, and typography architect. Translate the following English text into elegant, publishable ${targetLanguage} Markdown.
+
+CORE PRINCIPLES:
+1. "信达雅" (Faithful, Expressive, Elegant): Ensure the translation reads like a professionally published Chinese masterwork with natural, fluent, native phrasing.
+2. PRESERVE STRUCTURE & TYPOGRAPHY:
+   - Section Headings: Format headings as clear Markdown headings (## 标题 or ### 小标题).
+   - Core Takeaways & Quotes: Format notable quotes or key points as blockquotes (> ...).
+   - Paragraph Synthesis: Smoothly reconnect fragmented lines into cohesive paragraphs.
+   - Lists & Sequences: Convert bullet points into clean Markdown lists (-  or 1. ).
+   - Key Terms: Use **bold** for critical concepts and technical terms.
+3. OUTPUT FORMAT:
+   Output ONLY the translated Chinese Markdown. Do NOT include conversational filler, notes, or JSON metadata.`;
 }
 
 function buildExplainSystemPrompt() {
