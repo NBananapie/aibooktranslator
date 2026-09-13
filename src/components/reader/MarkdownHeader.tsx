@@ -16,7 +16,9 @@ import {
   Layers,
   Loader2,
   RotateCw,
+  Settings as SettingsIcon,
 } from 'lucide-react';
+import { ProgressRing } from '@/components/ProgressRing';
 
 export interface MarkdownHeaderProps {
   isImmersive: boolean;
@@ -34,6 +36,8 @@ export interface MarkdownHeaderProps {
   isNextPageCached: boolean;
   canPreTranslate: boolean;
   hasTranslatedText: boolean;
+  totalPages?: number;
+  cachedPagesCount?: number;
   onBackHome: () => void;
   onSetViewMode: (mode: 'translation' | 'ocr_source') => void;
   onToggleTheme: () => void;
@@ -44,6 +48,7 @@ export interface MarkdownHeaderProps {
   onToggleAutoTranslate: () => void;
   onPreTranslate: () => void;
   onTranslateCurrentPage: () => void;
+  onOpenSettings?: () => void;
 }
 
 export function MarkdownHeader({
@@ -62,6 +67,8 @@ export function MarkdownHeader({
   isNextPageCached,
   canPreTranslate,
   hasTranslatedText,
+  totalPages,
+  cachedPagesCount,
   onBackHome,
   onSetViewMode,
   onToggleTheme,
@@ -72,6 +79,7 @@ export function MarkdownHeader({
   onToggleAutoTranslate,
   onPreTranslate,
   onTranslateCurrentPage,
+  onOpenSettings,
 }: MarkdownHeaderProps) {
   return (
     <div className={styles.header}>
@@ -119,6 +127,15 @@ export function MarkdownHeader({
       </div>
 
       <div className={styles.controls}>
+        <button
+          type="button"
+          className={styles.topNavIconBtn}
+          onClick={onOpenSettings}
+          data-tooltip="引擎与模型设置"
+        >
+          <SettingsIcon size={15} />
+        </button>
+
         <button
           type="button"
           className={styles.topNavIconBtn}
@@ -176,6 +193,21 @@ export function MarkdownHeader({
         >
           <Zap size={15} />
         </button>
+
+        {totalPages && totalPages > 0 ? (
+          <div
+            style={{ display: 'inline-flex', alignItems: 'center', margin: '0 4px' }}
+            data-tooltip={`全书缓存/预载进度: ${Math.round(((cachedPagesCount || 0) / totalPages) * 100)}% (已缓存 ${cachedPagesCount || 0}/${totalPages} 页)`}
+          >
+            <ProgressRing
+              percent={Math.round(((cachedPagesCount || 0) / totalPages) * 100)}
+              size={24}
+              strokeWidth={2.6}
+              showText={false}
+              tooltip={`全书缓存/预载进度: ${Math.round(((cachedPagesCount || 0) / totalPages) * 100)}% (已缓存 ${cachedPagesCount || 0}/${totalPages} 页)`}
+            />
+          </div>
+        ) : null}
 
         <button
           type="button"

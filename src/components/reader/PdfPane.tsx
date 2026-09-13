@@ -8,6 +8,8 @@ import styles from '@/app/page.module.css';
 import { PdfHeader, PdfHeaderProps } from './PdfHeader';
 
 import { SourceBlock } from '@/services/layoutAnalysisEngine';
+import { findContiguousItemsForSentence } from '@/services/alignmentEngine';
+import { ClipItem } from '@/lib/db';
 
 // Initialize PDF.js worker
 if (!pdfjs.GlobalWorkerOptions.workerSrc) {
@@ -33,6 +35,9 @@ export interface PdfPaneProps extends PdfHeaderProps {
   onHoverBlock?: (id: string | null) => void;
   onClickBlock?: (id: string) => void;
   pdfOriginalView?: number[];
+  clips?: ClipItem[];
+  onClippedSpanClick?: (e: React.MouseEvent, clip: ClipItem) => void;
+  pdfTextItems?: any[];
 }
 
 export function PdfPane({
@@ -53,6 +58,9 @@ export function PdfPane({
   onHoverBlock,
   onClickBlock,
   pdfOriginalView = [0, 0, 600, 800],
+  clips = [],
+  onClippedSpanClick,
+  pdfTextItems = [],
   ...headerProps
 }: PdfPaneProps) {
   const origWidth = pdfOriginalView[2] || 600;
@@ -86,6 +94,47 @@ export function PdfPane({
       }
     }
   };
+
+  // 计算原文页面中的已剪藏虚线下划线高亮矩形
+  const clippedSpans = React.useMemo(() => {
+    if (!clips || clips.length === 0 || !pdfTextItems || pdfTextItems.length === 0) return [];
+    const validItems = pdfTextItems.filter(item => item.str && item.str.trim() && item.transform);
+    if (validItems.length === 0) return [];
+
+    const pageClips = clips.filter(c => c.pageNumber === pageNumber && c.text && c.text.trim());
+    if (pageClips.length === 0) return [];
+
+    const origHeight = pdfOriginalView[3] || 800;
+    const result: Array<{
+      clip: ClipItem;
+      rect: { left: number; top: number; width: number; height: number };
+      key: string;
+    }> = [];
+
+    for (const clip of pageClips) {
+      const matchedItems = findContiguousItemsForSentence(clip.text.trim(), validItems);
+      if (matchedItems && matchedItems.length > 0) {
+        matchedItems.forEach((item, idx) => {
+          const x = item.transform[4];
+          const y = item.transform[5];
+          const fontHeight = Math.abs(item.transform[3]) || Math.abs(item.transform[0]) || 12;
+          const w = item.width || item.str.length * fontHeight * 0.55;
+
+          const left = x * scale;
+          const top = (origHeight - y - fontHeight * 0.95) * scale;
+          const width = w * scale;
+          const height = fontHeight * 1.15 * scale;
+
+          result.push({
+            clip,
+            rect: { left, top, width, height },
+            key: `pdf-clip-${clip.id}-${idx}`,
+          });
+        });
+      }
+    }
+    return result;
+  }, [clips, pdfTextItems, pageNumber, pdfOriginalView, scale]);
 
   return (
     <div
@@ -162,6 +211,24 @@ export function PdfPane({
                     width: `${rect.width}px`,
                     height: `${rect.height}px`,
                   }}
+                />
+              ))}
+              {/* 原文已剪藏虚线下划线标记 */}
+              {clippedSpans.map(({ clip, rect, key }) => (
+                <span
+                  key={key}
+                  className={styles.pdfClippedDashedSpan}
+                  style={{
+                    left: `${rect.left}px`,
+                    top: `${rect.top}px`,
+                    width: `${rect.width}px`,
+                    height: `${rect.height}px`,
+                  }}
+                  onClick={e => {
+                    e.stopPropagation();
+                    onClippedSpanClick?.(e, clip);
+                  }}
+                  title={`已剪藏: ${clip.text}（点击唤起微岛）`}
                 />
               ))}
             </div>

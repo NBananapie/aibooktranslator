@@ -18,10 +18,12 @@ import { MarkdownPane } from './reader/MarkdownPane';
 import { FloatingToolbar } from './reader/FloatingToolbar';
 import { ExplainModal } from './reader/ExplainModal';
 import { ReaderOverlays } from './reader/ReaderOverlays';
+import { SettingsModal } from './SettingsModal';
 
 export default function PdfTranslator() {
   const { settings, activeFileId, theme, toggleTheme } = useAppContext();
   const router = useRouter();
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
   // 1. PDF 视口与文档状态
   const {
@@ -124,6 +126,7 @@ export default function PdfTranslator() {
     clearHighlights,
     triggerHighlightFromZh,
     triggerHighlightFromEn,
+    pdfTextItems,
   } = useBilingualSync({
     file,
     pdfDocument,
@@ -323,6 +326,9 @@ export default function PdfTranslator() {
         onHoverBlock={setHoveredBlockId}
         onClickBlock={id => syncScrollToBlock(id, 'pdf')}
         pdfOriginalView={pdfOriginalView}
+        clips={clips}
+        pdfTextItems={pdfTextItems}
+        onClippedSpanClick={handleClippedSpanClick}
       />
 
       <div
@@ -388,6 +394,9 @@ export default function PdfTranslator() {
         onHoverBlock={setHoveredBlockId}
         onClickBlock={id => syncScrollToBlock(id, 'markdown')}
         blockLayoutMetrics={blockLayoutMetrics}
+        totalPages={numPages}
+        cachedPagesCount={Object.keys(translationCache).length}
+        onOpenSettings={() => setIsSettingsOpen(true)}
       />
 
       <ExplainModal
@@ -402,6 +411,11 @@ export default function PdfTranslator() {
         onShowFollowUpInput={setShowFollowUpInput}
         onFollowUpInputChange={setExplainFollowUpInput}
         onSendFollowUp={handleSendFollowUp}
+      />
+
+      <SettingsModal
+        isOpen={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
       />
     </div>
   );

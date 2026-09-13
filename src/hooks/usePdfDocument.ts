@@ -91,6 +91,7 @@ export function usePdfDocument(options: UsePdfDocumentOptions) {
     setPdfDocument(pdf);
     const pages = pdf?.numPages || 0;
     setNumPages(pages);
+    setDbRecord((prev: any) => (prev ? { ...prev, totalPages: pages } : prev));
     if (activeFileId) {
       updateHistoryProgress(activeFileId, {
         totalPages: pages,
