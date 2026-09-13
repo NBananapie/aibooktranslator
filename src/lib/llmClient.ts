@@ -86,7 +86,8 @@ async function fetchGeminiDirectStream(params: {
   }
   cleanBaseUrl = cleanBaseUrl.replace(/\/v1beta.*$/, '').replace(/\/openai.*$/, '');
   
-  const apiUrl = `${cleanBaseUrl}/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`;
+  const cleanModel = (model && model.trim().toLowerCase()) || 'gemini-3.5-flash-lite';
+  const apiUrl = `${cleanBaseUrl}/v1beta/models/${encodeURIComponent(cleanModel)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`;
 
   const response = await fetch(apiUrl, {
     method: 'POST',

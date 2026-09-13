@@ -13,8 +13,15 @@ Format EXACTLY like this:
 -->
 Output ONLY the translated Markdown followed by the hidden BILINGUAL_MAP comment block. Do NOT include conversational filler.`;
 
+const BLOCK_PROTOCOL_INSTRUCTION = `
+STRUCTURED BLOCK-BY-BLOCK BILINGUAL ALIGNMENT PROTOCOL:
+If the user input contains numbered block prefixes like [B0], [B1], [B2], etc.:
+1. You MUST translate each block preserving its exact block prefix tag: [B0] <translated text>, [B1] <translated text>...
+2. Maintain strict 1-to-1 correspondence. Do NOT merge, reorder, or drop block numbers.
+3. Within each block, maintain elegant Markdown typography (such as ## for headings or > for quotes if applicable).`;
+
 function buildSystemPrompt(customPrompt?: string, targetLanguage = '中文') {
-  const basePrompt = (customPrompt && customPrompt.trim()) ? customPrompt.trim() : `You are an elite bilingual book editor, master translator, and typography architect. Translate the following English text into ${targetLanguage}.
+  let prompt = (customPrompt && customPrompt.trim()) ? customPrompt.trim() : `You are an elite bilingual book editor, master translator, and typography architect. Translate the following English text into ${targetLanguage}.
 
 CORE TRANSLATION & LAYOUT PRINCIPLES:
 1. "信达雅" (Faithful, Expressive, Elegant): Ensure the translation reads like a professionally published Chinese masterwork with natural, fluent, native business/literary phrasing.
@@ -25,10 +32,13 @@ CORE TRANSLATION & LAYOUT PRINCIPLES:
    - Lists & Sequences: Convert bullet points into clean Markdown lists (\`- \` or \`1. \`).
    - Key Concepts & Emphasis: Use \`**bold**\` for critical terms.`;
 
-  if (!basePrompt.includes('BILINGUAL_MAP')) {
-    return `${basePrompt}\n\n${BILINGUAL_MAP_INSTRUCTION}`;
+  if (!prompt.includes('BLOCK-BY-BLOCK')) {
+    prompt = `${prompt}\n\n${BLOCK_PROTOCOL_INSTRUCTION}`;
   }
-  return basePrompt;
+  if (!prompt.includes('BILINGUAL_MAP')) {
+    prompt = `${prompt}\n\n${BILINGUAL_MAP_INSTRUCTION}`;
+  }
+  return prompt;
 }
 
 // 处理 Google Gemini 原生协议流式输出 (Stream)
@@ -269,7 +279,11 @@ export async function POST(req: Request) {
     }
 
     const allowServerKey = process.env.ALLOW_SERVER_API_KEY === 'true';
-    const apiKey = clientApiKey || (allowServerKey ? process.env.MINIMAX_API_KEY : undefined);
+    const serverKey = process.env.API_KEY || process.env.DASHSCOPE_API_KEY || process.env.MINIMAX_API_KEY;
+    const serverBaseUrl = process.env.BASE_URL || (process.env.DASHSCOPE_API_KEY ? 'https://dashscope.aliyuncs.com/compatible-mode/v1' : 'https://api.minimax.chat/v1');
+    const serverModel = process.env.MODEL || (process.env.DASHSCOPE_API_KEY ? 'qwen-plus' : 'MiniMax-M2.7-highspeed');
+
+    const apiKey = (clientApiKey && clientApiKey.trim()) ? clientApiKey.trim() : (allowServerKey ? serverKey : undefined);
 
     if (!apiKey) {
       return Response.json(
@@ -287,7 +301,7 @@ export async function POST(req: Request) {
 
     if (isGemini) {
       const baseUrl = clientBaseUrl || 'https://generativelanguage.googleapis.com';
-      const model = (clientModel && clientModel.trim()) || 'gemini-3.5-flash-lite';
+      const model = ((clientModel && clientModel.trim()) || 'gemini-3.5-flash-lite').toLowerCase();
       return await handleGeminiStream({
         apiKey,
         baseUrl,
@@ -297,9 +311,9 @@ export async function POST(req: Request) {
       });
     }
 
-    // 默认走标准 OpenAI 兼容协议 (支持 MiniMax, OpenAI, DeepSeek, 各种第三方转发网关)
-    const baseUrl = clientBaseUrl || process.env.MINIMAX_BASE_URL || 'https://api.minimax.chat/v1';
-    const model = clientModel || process.env.TRANSLATE_MODEL || 'MiniMax-M2.7-highspeed';
+    // 默认走标准 OpenAI 兼容协议 (支持 DashScope, MiniMax, OpenAI, DeepSeek, 各种第三方转发网关)
+    const baseUrl = (clientApiKey && clientApiKey.trim() && clientBaseUrl) ? clientBaseUrl.trim() : serverBaseUrl;
+    const model = (clientApiKey && clientApiKey.trim() && clientModel) ? clientModel.trim() : serverModel;
 
     return await handleOpenAIStream({
       apiKey,
