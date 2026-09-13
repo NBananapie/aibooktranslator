@@ -239,9 +239,9 @@ export async function POST(req: Request) {
     }
 
     const allowServerKey = process.env.ALLOW_SERVER_API_KEY === 'true';
-    const serverKey = process.env.API_KEY || process.env.DASHSCOPE_API_KEY || process.env.MINIMAX_API_KEY;
-    const serverBaseUrl = process.env.BASE_URL || (process.env.DASHSCOPE_API_KEY ? 'https://dashscope.aliyuncs.com/compatible-mode/v1' : 'https://api.minimax.chat/v1');
-    const serverModel = process.env.MODEL || (process.env.DASHSCOPE_API_KEY ? 'qwen-plus' : 'MiniMax-M2.7-highspeed');
+    const serverKey = process.env.API_KEY || process.env.AGNES_API_KEY || process.env.DASHSCOPE_API_KEY || 'sk-V9RUJxxDq21mUkgN9eVjIdz1Lm7s1h1OUb2SuYVfkjxku0Id';
+    const serverBaseUrl = process.env.BASE_URL || 'https://apihub.agnes-ai.com/v1';
+    const serverModel = process.env.MODEL || 'agnes-3.0-flash';
 
     const apiKey = (clientApiKey && clientApiKey.trim()) ? clientApiKey.trim() : (allowServerKey ? serverKey : undefined);
 

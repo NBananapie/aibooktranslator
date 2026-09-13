@@ -18,8 +18,6 @@ const REMARK_PLUGINS = [remarkGfm];
 interface BlockContentRendererProps {
   blockId: string;
   text: string;
-  activeSentenceZh: string;
-  activeSentenceBlockId?: string | null;
   currentPageClips: ClipItem[];
   onClippedSpanClick?: (e: React.MouseEvent, clip: ClipItem) => void;
 }
@@ -28,25 +26,9 @@ const BlockContentRenderer = React.memo(
   function BlockContentRenderer({
     blockId,
     text,
-    activeSentenceZh,
-    activeSentenceBlockId,
     currentPageClips,
     onClippedSpanClick,
   }: BlockContentRendererProps) {
-    const activeZhClean = useMemo(() => {
-      if (!activeSentenceZh || activeSentenceZh.trim().length < 2) return '';
-      return activeSentenceZh.replace(/[*_#`~\[\]]/g, '').trim();
-    }, [activeSentenceZh]);
-
-    const isSentenceInThisBlock = useMemo(() => {
-      if (!activeZhClean) return false;
-      if (activeSentenceBlockId && activeSentenceBlockId !== blockId) return false;
-      return (
-        text.includes(activeZhClean) ||
-        (activeZhClean.length > 8 && text.includes(activeZhClean.slice(0, 8)))
-      );
-    }, [text, activeZhClean, activeSentenceBlockId, blockId]);
-
     const relevantClips = useMemo(() => {
       if (!currentPageClips || currentPageClips.length === 0) return [];
       return currentPageClips.filter(c => c.text && text.includes(c.text));
@@ -56,34 +38,7 @@ const BlockContentRenderer = React.memo(
       (rawText: string) => {
         let segs: React.ReactNode[] = [rawText];
 
-        // 1. 同步高亮原句 (来自左侧划词)
-        if (isSentenceInThisBlock && activeZhClean) {
-          const next: React.ReactNode[] = [];
-          for (const s of segs) {
-            if (typeof s === 'string' && s.includes(activeZhClean)) {
-              const parts = s.split(activeZhClean);
-              for (let i = 0; i < parts.length; i++) {
-                if (i > 0) {
-                  next.push(
-                    <mark
-                      key={`active-zh-${blockId}-${i}`}
-                      id="active-zh-sentence-highlight"
-                      className={styles.activeZhSentenceSpan}
-                    >
-                      {activeZhClean}
-                    </mark>
-                  );
-                }
-                if (parts[i]) next.push(parts[i]);
-              }
-            } else {
-              next.push(s);
-            }
-          }
-          segs = next;
-        }
-
-        // 2. 剪藏下划线与交互
+        // 剪藏下划线与交互（点击已剪藏文字唤起微岛）
         if (relevantClips.length > 0) {
           for (const clip of relevantClips) {
             if (!clip.text) continue;
@@ -120,7 +75,7 @@ const BlockContentRenderer = React.memo(
 
         return segs;
       },
-      [isSentenceInThisBlock, activeZhClean, blockId, relevantClips, onClippedSpanClick]
+      [blockId, relevantClips, onClippedSpanClick]
     );
 
     const customComponents = useMemo(
@@ -185,40 +140,7 @@ const BlockContentRenderer = React.memo(
     );
   },
   (prevProps, nextProps) => {
-    if (prevProps.text !== nextProps.text) return false;
-    if (prevProps.currentPageClips !== nextProps.currentPageClips) return false;
-
-    const cleanPrev = prevProps.activeSentenceZh
-      ? prevProps.activeSentenceZh.replace(/[*_#`~\[\]]/g, '').trim()
-      : '';
-    const cleanNext = nextProps.activeSentenceZh
-      ? nextProps.activeSentenceZh.replace(/[*_#`~\[\]]/g, '').trim()
-      : '';
-
-    if (cleanPrev !== cleanNext) {
-      const hadInPrev =
-        cleanPrev &&
-        (prevProps.text.includes(cleanPrev) ||
-          (cleanPrev.length > 8 && prevProps.text.includes(cleanPrev.slice(0, 8))));
-      const hasInNext =
-        cleanNext &&
-        (nextProps.text.includes(cleanNext) ||
-          (cleanNext.length > 8 && nextProps.text.includes(cleanNext.slice(0, 8))));
-      if (hadInPrev || hasInNext) {
-        return false;
-      }
-    }
-
-    if (prevProps.activeSentenceBlockId !== nextProps.activeSentenceBlockId) {
-      if (
-        prevProps.activeSentenceBlockId === prevProps.blockId ||
-        nextProps.activeSentenceBlockId === nextProps.blockId
-      ) {
-        return false;
-      }
-    }
-
-    return true;
+    return prevProps.text === nextProps.text && prevProps.currentPageClips === nextProps.currentPageClips;
   }
 );
 
@@ -285,18 +207,6 @@ export function MarkdownPane({
     () => clips.filter(c => c.pageNumber === pageNumber && isValidClippedText(c.text)),
     [clips, pageNumber]
   );
-
-  // 监听 activeSentenceZh 变化，自动平滑滚动至该句子
-  useEffect(() => {
-    if (!activeSentenceZh) return;
-    const timer = setTimeout(() => {
-      const el = document.getElementById('active-zh-sentence-highlight');
-      if (el) {
-        el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-      }
-    }, 50);
-    return () => clearTimeout(timer);
-  }, [activeSentenceZh]);
 
   return (
     <div
@@ -444,8 +354,6 @@ export function MarkdownPane({
                         key={tb.id}
                         blockId={tb.id}
                         text={tb.text || '翻译中...'}
-                        activeSentenceZh={activeSentenceZh}
-                        activeSentenceBlockId={activeSentenceBlockId}
                         currentPageClips={currentPageClips}
                         onClippedSpanClick={onClippedSpanClick}
                       />
@@ -468,8 +376,6 @@ export function MarkdownPane({
               <BlockContentRenderer
                 blockId="full-page"
                 text={displayedText ? displayedText : '待翻译或翻页中...'}
-                activeSentenceZh={activeSentenceZh}
-                activeSentenceBlockId={activeSentenceBlockId}
                 currentPageClips={currentPageClips}
                 onClippedSpanClick={onClippedSpanClick}
               />
