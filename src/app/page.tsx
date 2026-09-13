@@ -22,8 +22,9 @@ import {
 } from 'lucide-react';
 
 const PROVIDER_PRESETS: { label: string; baseUrl: string; model: string; provider: 'openai' | 'gemini' | 'custom' }[] = [
+  { label: 'Agnes (3.0 Flash 默认)', baseUrl: 'https://apihub.agnes-ai.com/v1', model: 'agnes-3.0-flash', provider: 'openai' },
   { label: 'MiniMax', baseUrl: 'https://api.minimax.chat/v1', model: 'MiniMax-M2.7-highspeed', provider: 'openai' },
-  { label: 'Google Gemini (3.5 Flash-Lite)', baseUrl: 'https://generativelanguage.googleapis.com', model: 'gemini-3.5-flash-lite', provider: 'gemini' },
+  { label: 'Google Gemini', baseUrl: 'https://generativelanguage.googleapis.com', model: 'gemini-3.5-flash-lite', provider: 'gemini' },
   { label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', provider: 'openai' },
 ];
 
@@ -413,7 +414,15 @@ export default function Home() {
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <label>模型名称 (Model)</label>
                 {/* 快捷推荐模型 */}
-                <div style={{ display: 'flex', gap: '4px' }}>
+                <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    className={styles.btnSecondary}
+                    style={{ padding: '2px 6px', fontSize: '10px' }}
+                    onClick={() => setFormSettings({ ...formSettings, model: 'agnes-3.0-flash' })}
+                  >
+                    agnes-3.0-flash
+                  </button>
                   {(formSettings.provider === 'gemini' || formSettings.baseUrl.includes('googleapis.com')) ? (
                     <>
                       <button

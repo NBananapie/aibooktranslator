@@ -1,9 +1,11 @@
 "use client";
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { AppSettings } from '@/context/AppContext';
 import { ClipItem } from '@/lib/db';
 import { executeExplainStream } from '@/lib/llmClient';
+import { SourceBlock } from '@/services/layoutAnalysisEngine';
+import { TargetBlock } from '@/services/alignmentEngine';
 
 export interface FloatingToolbarState {
   visible: boolean;
@@ -16,27 +18,21 @@ export interface FloatingToolbarState {
 }
 
 /**
- * 校验剪藏文本的语义有效性：
+ * 校验划词/剪藏文本的语义有效性（第一性原理）：
  * 1. 非空且去除首尾空白
- * 2. 长度至少大于等于 2 字符 (防止单一标点或字符误触)
- * 3. 必须包含实质性的汉字、英文字母或数字，排除纯标点符号
+ * 2. 必须包含实质性的汉字、英文字母或数字（单字、单词、短语、整句与长段落均被支持）
+ * 3. 排除纯空白或纯符号
  */
 export function isValidClippedText(text: string | null | undefined): boolean {
   if (!text) return false;
   const trimmed = text.trim();
-  if (trimmed.length < 2) return false;
+  if (trimmed.length === 0) return false;
+  // 必须包含至少一个字或字母/数字，防止选中纯空白或纯换行
   if (!/[\u4e00-\u9fa5a-zA-Z0-9]/.test(trimmed)) {
-    return false;
-  }
-  const purePunctuationRegex = /^[，。！？、；：“”‘’（）《》【】…—～·\s\-.,!?;:'"()\[\]{}<>/\\|`~@#$%^&*+=]+$/;
-  if (purePunctuationRegex.test(trimmed)) {
     return false;
   }
   return true;
 }
-
-import { SourceBlock } from '@/services/layoutAnalysisEngine';
-import { TargetBlock } from '@/services/alignmentEngine';
 
 export interface ExplainHistoryItem {
   role: 'user' | 'assistant';
@@ -48,12 +44,30 @@ export interface UseTextSelectionOptions {
   settings: AppSettings;
   clips: ClipItem[];
   pageNumber: number;
-  bilingualMapCache: Record<number, Array<{ zh: string; en: string }>>;
-  onTriggerHighlightFromZh: (text: string, contextParagraph?: string, blockId?: string) => void;
-  onTriggerHighlightFromEn: (text: string, hintBlockId?: string) => void;
-  onClearHighlights: () => void;
   sourceBlocks?: SourceBlock[];
   targetBlocks?: TargetBlock[];
+  // 保留可选回调以兼容调用处，但单向划词中绝不触发跨屏高亮与滚动
+  bilingualMapCache?: Record<number, Array<{ zh: string; en: string }>>;
+  onTriggerHighlightFromZh?: (text: string, contextParagraph?: string, blockId?: string) => void;
+  onTriggerHighlightFromEn?: (text: string, hintBlockId?: string) => void;
+  onClearHighlights?: () => void;
+}
+
+/**
+ * 计算悬浮微岛的最佳像素坐标与方向
+ */
+function calculateToolbarPlacement(rect: DOMRect): { top: number; left: number; placement: 'top' | 'bottom' } {
+  // 视口避让：若选区顶部距离视口顶端小于 65px，改在选区下方弹出
+  const placement: 'top' | 'bottom' = rect.top < 65 ? 'bottom' : 'top';
+  const top = placement === 'bottom' ? rect.bottom + 8 : rect.top - 8;
+
+  // 水平视口边界保护（以微岛宽度 220px 为准，半宽 110px）
+  const toolbarHalfWidth = 110;
+  const screenW = typeof window !== 'undefined' ? window.innerWidth : 1200;
+  const rawCenter = rect.left + rect.width / 2;
+  const left = Math.max(toolbarHalfWidth + 12, Math.min(screenW - toolbarHalfWidth - 12, rawCenter));
+
+  return { top, left, placement };
 }
 
 export function useTextSelection(options: UseTextSelectionOptions) {
@@ -62,18 +76,13 @@ export function useTextSelection(options: UseTextSelectionOptions) {
     settings,
     clips,
     pageNumber,
-    bilingualMapCache,
-    onTriggerHighlightFromZh,
-    onTriggerHighlightFromEn,
-    onClearHighlights,
     sourceBlocks = [],
-    targetBlocks = [],
   } = options;
 
-  // Floating Toolbar 状态
+  // 悬浮微岛胶囊状态
   const [floatingToolbar, setFloatingToolbar] = useState<FloatingToolbarState | null>(null);
 
-  // AI Explain Modal 状态
+  // AI 深度伴读解释弹窗状态
   const [isExplainModalOpen, setIsExplainModalOpen] = useState<boolean>(false);
   const [explainTargetText, setExplainTargetText] = useState<string>('');
   const [explainResultText, setExplainResultText] = useState<string>('');
@@ -82,144 +91,98 @@ export function useTextSelection(options: UseTextSelectionOptions) {
   const [explainFollowUpInput, setExplainFollowUpInput] = useState<string>('');
   const [showFollowUpInput, setShowFollowUpInput] = useState<boolean>(false);
 
-  // 1. 划词选区监听与悬浮微岛工具栏 (右侧 Markdown 划选中文)
-  const handleMarkdownSelection = () => {
-    const selection = window.getSelection();
-    if (!selection || selection.isCollapsed || !selection.toString().trim()) {
-      return;
-    }
+  // 划选判定安全锁与延时引用
+  const dismissTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-    const text = selection.toString().trim();
-    // 严格有效性校验：纯标点或过短选区坚决不触发微岛
-    if (!isValidClippedText(text)) {
-      setFloatingToolbar(null);
-      return;
-    }
-
-    const anchorNode = selection.anchorNode;
-    const cardEl =
-      anchorNode?.nodeType === Node.ELEMENT_NODE
-        ? (anchorNode as Element).closest('[id^="target-"]')
-        : anchorNode?.parentElement?.closest('[id^="target-"]');
-    const blockId = cardEl?.id?.replace('target-', '') || undefined;
-
-    const pEl =
-      anchorNode?.nodeType === Node.ELEMENT_NODE
-        ? (anchorNode as Element).closest('p')
-        : anchorNode?.parentElement?.closest('p');
-    const contextParagraph = pEl?.textContent || '';
-
-    const range = selection.getRangeAt(0);
-    const rect = range.getBoundingClientRect();
-
-    // 视口智能避让逻辑：若上方空间受限 (< 65px)，改为在选区下方弹出
-    const placement: 'top' | 'bottom' = rect.top < 65 ? 'bottom' : 'top';
-    const top = placement === 'bottom' ? rect.bottom + 10 : rect.top;
-
-    // 水平视口边界保护，防止超出左右可视范围
-    const toolbarHalfWidth = 110;
-    const screenW = typeof window !== 'undefined' ? window.innerWidth : 1200;
-    const rawLeft = rect.left + rect.width / 2;
-    const left = Math.max(toolbarHalfWidth + 12, Math.min(screenW - toolbarHalfWidth - 12, rawLeft));
-
-    // 严格精准匹配已有剪藏（排除包含关系的误报）
-    const existingClip = clips.find(
-      c => c.pageNumber === pageNumber && c.text.trim() === text.trim()
-    );
-
-    setFloatingToolbar({
-      visible: true,
-      top,
-      left,
-      text,
-      placement,
-      isClipped: !!existingClip,
-      clipId: existingClip?.id,
-    });
-
-    onTriggerHighlightFromZh(text, contextParagraph, blockId);
-  };
-
-  // 2. 从左侧 PDF 划选英文文本，双向唤起微岛并反查高亮右侧中文译文
-  const handlePdfSelection = () => {
-    const selection = window.getSelection();
-    if (!selection || selection.isCollapsed || !selection.toString().trim()) {
-      return;
-    }
-    const enText = selection.toString().trim();
-
-    if (!isValidClippedText(enText)) return;
-
-    const range = selection.getRangeAt(0);
-    const rect = range.getBoundingClientRect();
-
-    const placement: 'top' | 'bottom' = rect.top < 65 ? 'bottom' : 'top';
-    const top = placement === 'bottom' ? rect.bottom + 10 : rect.top;
-
-    const toolbarHalfWidth = 110;
-    const screenW = typeof window !== 'undefined' ? window.innerWidth : 1200;
-    const rawLeft = rect.left + rect.width / 2;
-    const left = Math.max(toolbarHalfWidth + 12, Math.min(screenW - toolbarHalfWidth - 12, rawLeft));
-
-    const existingClip = clips.find(
-      c => c.pageNumber === pageNumber && c.text.trim() === enText.trim()
-    );
-
-    setFloatingToolbar({
-      visible: true,
-      top,
-      left,
-      text: enText,
-      placement,
-      isClipped: !!existingClip,
-      clipId: existingClip?.id,
-    });
-
-    // 寻找用户所在段落块 hintBlockId
-    let hintBlockId: string | undefined = undefined;
-    const cleanEn = enText.toLowerCase();
-
-    // 1. 优先通过几何空间包含判定：检查 selection 中心点落在哪个 pdfBlockOverlay 内
-    if (sourceBlocks.length > 0 && typeof document !== 'undefined') {
-      const pdfWrapper = document.querySelector('[class*="pdfWrapper"]');
-      if (pdfWrapper) {
-        const selCenterY = rect.top + rect.height / 2;
-        const selCenterX = rect.left + rect.width / 2;
-        const overlays = Array.from(pdfWrapper.querySelectorAll('[class*="pdfBlockOverlay"]'));
-        for (let i = 0; i < overlays.length && i < sourceBlocks.length; i++) {
-          const oRect = overlays[i].getBoundingClientRect();
-          if (
-            selCenterY >= oRect.top - 8 &&
-            selCenterY <= oRect.bottom + 8 &&
-            selCenterX >= oRect.left - 15 &&
-            selCenterX <= oRect.right + 15
-          ) {
-            hintBlockId = sourceBlocks[i].id;
-            break;
-          }
-        }
+  // 1. 译文区域（右侧 Markdown）单向划词监听
+  const handleMarkdownSelection = useCallback(() => {
+    // 使用 requestAnimationFrame 确保读取到浏览器已完全确认的稳定 Range
+    requestAnimationFrame(() => {
+      const selection = window.getSelection();
+      if (!selection || selection.isCollapsed || !selection.rangeCount) {
+        return;
       }
-    }
 
-    // 2. 回退策略：按包含关系检索，优先单词边界正则
-    if (!hintBlockId) {
-      const wordRegex = new RegExp(`\\b${cleanEn.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
-      const matchedSb = sourceBlocks.find(sb => wordRegex.test(sb.text));
-      if (matchedSb) {
-        hintBlockId = matchedSb.id;
-      } else {
-        const fallbackSb = sourceBlocks.find(sb => sb.text.toLowerCase().includes(cleanEn));
-        if (fallbackSb) hintBlockId = fallbackSb.id;
+      const raw = selection.toString();
+      const text = raw.trim();
+      if (!isValidClippedText(text)) {
+        return;
       }
-    }
 
-    onTriggerHighlightFromEn(enText, hintBlockId);
-  };
+      const range = selection.getRangeAt(0);
+      let rect = range.getBoundingClientRect();
+      if (rect.width === 0 && rect.height === 0) {
+        const rects = range.getClientRects();
+        if (rects.length > 0) rect = rects[0];
+      }
+      if (rect.width === 0 && rect.height === 0) return;
 
-  // 3. 全局释放鼠标时检测是否取消选区
+      const { top, left, placement } = calculateToolbarPlacement(rect);
+
+      // 精准匹配当页已剪藏记录
+      const existingClip = clips.find(
+        c => c.pageNumber === pageNumber && c.text.trim() === text
+      );
+
+      // 单向选中：只弹出当前选区的微岛，不触发任何跨屏高亮或滚动
+      setFloatingToolbar({
+        visible: true,
+        top,
+        left,
+        text,
+        placement,
+        isClipped: !!existingClip,
+        clipId: existingClip?.id,
+      });
+    });
+  }, [clips, pageNumber]);
+
+  // 2. 原文区域（左侧 PDF）单向划词监听
+  const handlePdfSelection = useCallback(() => {
+    requestAnimationFrame(() => {
+      const selection = window.getSelection();
+      if (!selection || selection.isCollapsed || !selection.rangeCount) {
+        return;
+      }
+
+      const raw = selection.toString();
+      const enText = raw.trim();
+      if (!isValidClippedText(enText)) {
+        return;
+      }
+
+      const range = selection.getRangeAt(0);
+      let rect = range.getBoundingClientRect();
+      if (rect.width === 0 && rect.height === 0) {
+        const rects = range.getClientRects();
+        if (rects.length > 0) rect = rects[0];
+      }
+      if (rect.width === 0 && rect.height === 0) return;
+
+      const { top, left, placement } = calculateToolbarPlacement(rect);
+
+      const existingClip = clips.find(
+        c => c.pageNumber === pageNumber && c.text.trim() === enText
+      );
+
+      // 单向选中：只弹出当前选区的微岛，绝不联动右侧译文高亮或滚动
+      setFloatingToolbar({
+        visible: true,
+        top,
+        left,
+        text: enText,
+        placement,
+        isClipped: !!existingClip,
+        clipId: existingClip?.id,
+      });
+    });
+  }, [clips, pageNumber]);
+
+  // 3. 全局点击与选区折叠监听（防闪退核心机制）
   useEffect(() => {
     const handleGlobalMouseUp = (e: MouseEvent) => {
       const target = e.target instanceof Element ? e.target : (e.target as any)?.parentElement || null;
+      // 若点击在微岛本身、模态框、按钮或输入框内，坚决不清除微岛
       if (
         target && (
           target.closest('[data-interactive-protected="true"]') ||
@@ -234,18 +197,37 @@ export function useTextSelection(options: UseTextSelectionOptions) {
         return;
       }
 
-      const selection = window.getSelection();
-      if (!selection || selection.isCollapsed || !selection.toString().trim()) {
-        setFloatingToolbar(null);
-        onClearHighlights();
+      // 延迟 60ms 检查选区状态，避开鼠标划词动作完成时的瞬态微小抖动
+      if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current);
+      dismissTimerRef.current = setTimeout(() => {
+        const selection = window.getSelection();
+        if (!selection || selection.isCollapsed || !selection.toString().trim()) {
+          setFloatingToolbar(null);
+        }
+      }, 60);
+    };
+
+    // 页面滚动时关闭微岛，避免坐标错位悬空
+    const handleScroll = (e: Event) => {
+      const target = e.target as HTMLElement;
+      // 排除模态框或抽屉内部的滚动
+      if (target?.closest?.('[class*="modal"]') || target?.closest?.('[class*="Drawer"]')) {
+        return;
       }
+      setFloatingToolbar(null);
     };
 
     window.addEventListener('mouseup', handleGlobalMouseUp);
-    return () => window.removeEventListener('mouseup', handleGlobalMouseUp);
-  }, [onClearHighlights]);
+    window.addEventListener('scroll', handleScroll, true);
 
-  // 4. 打开深度伴读弹窗并流式生成首轮解析
+    return () => {
+      if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current);
+      window.removeEventListener('mouseup', handleGlobalMouseUp);
+      window.removeEventListener('scroll', handleScroll, true);
+    };
+  }, []);
+
+  // 4. 打开深度伴读弹窗并流式生成解析
   const handleOpenExplain = async () => {
     if (!floatingToolbar || !floatingToolbar.text) return;
     const textToExplain = floatingToolbar.text;
@@ -258,7 +240,8 @@ export function useTextSelection(options: UseTextSelectionOptions) {
     setIsExplainLoading(true);
 
     try {
-      const matchedBlock = sourceBlocks?.find(sb =>
+      // 尝试根据原文段落块提取精准上下文作为背景辅助
+      const matchedBlock = sourceBlocks.find(sb =>
         sb.text.toLowerCase().includes(textToExplain.toLowerCase())
       );
       const contextPrompt = matchedBlock

@@ -245,7 +245,7 @@ export default function PdfTranslator() {
     e.stopPropagation();
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const placement: 'top' | 'bottom' = rect.top < 65 ? 'bottom' : 'top';
-    const top = placement === 'bottom' ? rect.bottom + 10 : rect.top;
+    const top = placement === 'bottom' ? rect.bottom + 8 : rect.top - 8;
     const toolbarHalfWidth = 110;
     const screenW = typeof window !== 'undefined' ? window.innerWidth : 1200;
     const rawLeft = rect.left + rect.width / 2;
@@ -260,8 +260,7 @@ export default function PdfTranslator() {
       isClipped: true,
       clipId: clip.id,
     });
-    triggerHighlightFromZh(clip.text, undefined, undefined, targetBlocks);
-  }, [triggerHighlightFromZh, targetBlocks]);
+  }, [setFloatingToolbar]);
 
   const downloadMarkdown = () => {
     if (!file || Object.keys(translationCache).length === 0) return;
