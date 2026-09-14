@@ -294,24 +294,16 @@ export function findContiguousItemsForSentence(sentence: string, items: any[]): 
     }
   }
 
-  // 4. 命中判定：单词选区阈值为 1，多词选区阈值为 2，优先返回连续匹配的 items
-  const threshold = targetWords.length === 1 ? 1 : Math.min(2, targetWords.length);
-  if (bestStartFlat >= 0 && bestMatchLen >= threshold) {
-    const startItemIdx = flatWords[bestStartFlat].itemIdx;
-    const endItemIdx = flatWords[bestEndFlat].itemIdx;
-    return items.slice(startItemIdx, endItemIdx + 1);
-  }
-
-  // 5. 备用兜底：针对短词或前缀变形进行容错匹配
-  for (let k = 0; k < targetWords.length; k++) {
-    const tw = targetWords[k];
-    if (tw.length < 3) continue;
-    for (let i = 0; i < flatWords.length; i++) {
-      const fw = flatWords[i].word;
-      if (fw === tw || (fw.length >= 4 && (fw.startsWith(tw) || tw.startsWith(fw)))) {
-        return [items[flatWords[i].itemIdx]];
-      }
+  // 4. 命中判定：高精度连续单词流匹配
+  // 必须达到足够的匹配比例，杜绝凭一两个数字匹配整句或多句
+  const minMatchLen = targetWords.length <= 2 ? targetWords.length : Math.max(3, Math.floor(targetWords.length * 0.65));
+  if (bestStartFlat >= 0 && bestMatchLen >= minMatchLen) {
+    // 仅提取真正落在匹配单词窗口内的 item 索引，严禁基于下标粗暴 slice 污染跨段 items
+    const matchedItemIndices = new Set<number>();
+    for (let f = bestStartFlat; f <= bestEndFlat; f++) {
+      matchedItemIndices.add(flatWords[f].itemIdx);
     }
+    return items.filter((_, idx) => matchedItemIndices.has(idx));
   }
 
   return [];

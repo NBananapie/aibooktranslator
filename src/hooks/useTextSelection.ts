@@ -182,11 +182,14 @@ export function useTextSelection(options: UseTextSelectionOptions) {
   useEffect(() => {
     const handleGlobalMouseUp = (e: MouseEvent) => {
       const target = e.target instanceof Element ? e.target : (e.target as any)?.parentElement || null;
-      // 若点击在微岛本身、模态框、按钮或输入框内，坚决不清除微岛
+      // 若点击在微岛本身、已剪藏文字节点、模态框、按钮或输入框内，坚决不清除微岛
       if (
         target && (
           target.closest('[data-interactive-protected="true"]') ||
+          target.closest('[data-clip-interactive="true"]') ||
           target.closest('[class*="floatingToolbar"]') ||
+          target.closest('[class*="clipped"]') ||
+          target.closest('[class*="Clipped"]') ||
           target.closest('[class*="modal"]') ||
           target.closest('[class*="Drawer"]') ||
           target.closest('button') ||
@@ -197,14 +200,19 @@ export function useTextSelection(options: UseTextSelectionOptions) {
         return;
       }
 
-      // 延迟 60ms 检查选区状态，避开鼠标划词动作完成时的瞬态微小抖动
+      // 延迟 80ms 检查选区状态：仅在非剪藏触发的选区真正折叠时关闭浮窗
       if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current);
       dismissTimerRef.current = setTimeout(() => {
         const selection = window.getSelection();
-        if (!selection || selection.isCollapsed || !selection.toString().trim()) {
-          setFloatingToolbar(null);
-        }
-      }, 60);
+        setFloatingToolbar(prev => {
+          // 如果当前微岛是针对已剪藏条目显示的，且未被显式关闭，保持显示，防闪退
+          if (prev?.isClipped) return prev;
+          if (!selection || selection.isCollapsed || !selection.toString().trim()) {
+            return null;
+          }
+          return prev;
+        });
+      }, 80);
     };
 
     // 页面滚动时关闭微岛，避免坐标错位悬空

@@ -194,21 +194,6 @@ export function MarkdownHeader({
           <Zap size={15} />
         </button>
 
-        {totalPages && totalPages > 0 ? (
-          <div
-            style={{ display: 'inline-flex', alignItems: 'center', margin: '0 4px' }}
-            data-tooltip={`全书缓存/预载进度: ${Math.round(((cachedPagesCount || 0) / totalPages) * 100)}% (已缓存 ${cachedPagesCount || 0}/${totalPages} 页)`}
-          >
-            <ProgressRing
-              percent={Math.round(((cachedPagesCount || 0) / totalPages) * 100)}
-              size={24}
-              strokeWidth={2.6}
-              showText={false}
-              tooltip={`全书缓存/预载进度: ${Math.round(((cachedPagesCount || 0) / totalPages) * 100)}% (已缓存 ${cachedPagesCount || 0}/${totalPages} 页)`}
-            />
-          </div>
-        ) : null}
-
         <button
           type="button"
           className={`${styles.topNavIconBtn} ${
@@ -222,18 +207,38 @@ export function MarkdownHeader({
           disabled={isPreTranslating}
           data-tooltip={
             isPreTranslating
-              ? '正在流水线预读后续多页翻译...'
+              ? `正在流水线预读后续多页翻译... ${totalPages ? `(已缓存 ${cachedPagesCount || 0}/${totalPages} 页 · ${Math.round(((cachedPagesCount || 0) / totalPages) * 100)}%)` : ''}`
               : isNextPageCached
-              ? '下一页已就绪（点击继续预读后续章节）'
-              : '流水线预加载后续多页翻译'
+              ? `下一页已就绪（点击继续预读后续章节）${totalPages ? ` · 全书进度 ${Math.round(((cachedPagesCount || 0) / totalPages) * 100)}% (${cachedPagesCount || 0}/${totalPages} 页)` : ''}`
+              : `流水线预加载后续多页翻译${totalPages ? ` (当前已缓存 ${cachedPagesCount || 0}/${totalPages} 页)` : ''}`
           }
+          style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
         >
           {isPreTranslating ? (
-            <Loader2 size={15} className={styles.spinAnim} />
+            <ProgressRing
+              percent={totalPages && totalPages > 0 ? Math.max(15, Math.round(((cachedPagesCount || 0) / totalPages) * 100)) : 60}
+              size={19}
+              strokeWidth={2.4}
+              showText={false}
+              className={styles.spinAnim}
+            />
           ) : isNextPageCached ? (
-            <BookCheck size={15} />
+            <div style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <ProgressRing
+                percent={totalPages && totalPages > 0 ? Math.round(((cachedPagesCount || 0) / totalPages) * 100) : 100}
+                size={19}
+                strokeWidth={2.2}
+                showText={false}
+              />
+              <BookCheck size={10} style={{ position: 'absolute', color: 'var(--primary)' }} />
+            </div>
           ) : (
-            <Layers size={15} />
+            <ProgressRing
+              percent={totalPages && totalPages > 0 ? Math.round(((cachedPagesCount || 0) / totalPages) * 100) : 0}
+              size={19}
+              strokeWidth={2.2}
+              showText={false}
+            />
           )}
         </button>
 

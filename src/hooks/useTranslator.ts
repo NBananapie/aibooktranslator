@@ -57,20 +57,13 @@ export function useTranslator(options: UseTranslatorOptions) {
   const abortControllerRef = useRef<AbortController | null>(null);
   const lastParsedRawRef = useRef<string>('');
 
-  // 1. 平滑打字机动画调度器与分块流式解析器
+  // 1. 平滑打字机动画调度器
   useEffect(() => {
     let rafId: number | null = null;
     let isCancelled = false;
 
     const tick = () => {
       if (isCancelled) return;
-      const raw = fullTextRef.current;
-      if (raw && raw !== lastParsedRawRef.current) {
-        lastParsedRawRef.current = raw;
-        const { blocks } = parseBlockTranslation(raw, sourceBlocks);
-        setTargetBlocks(blocks);
-      }
-
       const { cleanMarkdown } = parseTranslationOutput(fullTextRef.current);
       let needsNextFrame = isTranslating;
 
@@ -96,7 +89,7 @@ export function useTranslator(options: UseTranslatorOptions) {
       isCancelled = true;
       if (rafId) cancelAnimationFrame(rafId);
     };
-  }, [sourceBlocks, isTranslating]);
+  }, [isTranslating]);
 
   // 1. 初始化从 dbRecord 同步已有翻译缓存
   useEffect(() => {
@@ -107,17 +100,6 @@ export function useTranslator(options: UseTranslatorOptions) {
       }));
     }
   }, [dbRecord?.id]);
-
-  // 当 sourceBlocks 异步解析完毕，若当前页已有翻译内容，重新校准 TargetBlock 映射与双语对齐字典
-  useEffect(() => {
-    if (fullTextRef.current && sourceBlocks.length > 0) {
-      const { blocks, alignmentMap } = parseBlockTranslation(fullTextRef.current, sourceBlocks);
-      setTargetBlocks(blocks);
-      if (alignmentMap && alignmentMap.length > 0 && onBilingualMapExtracted) {
-        onBilingualMapExtracted(currentPageRef.current, alignmentMap);
-      }
-    }
-  }, [sourceBlocks]);
 
   // 2. 页面切换时，同步当前页引用、重置或回显翻译内容
   useEffect(() => {

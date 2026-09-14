@@ -52,6 +52,7 @@ const BlockContentRenderer = React.memo(
                     next.push(
                       <span
                         key={`clip-${clip.id}-${i}`}
+                        data-clip-interactive="true"
                         className={styles.clippedTextSpan}
                         onClick={e => {
                           e.stopPropagation();
@@ -296,72 +297,6 @@ export function MarkdownPane({
                 </div>
               </div>
               <ReactMarkdown remarkPlugins={[remarkGfm]}>{ocrText}</ReactMarkdown>
-            </div>
-          ) : targetBlocks.length > 0 ? (
-            <div
-              style={{
-                maxWidth: isImmersive ? (fullWidthReading ? '100%' : '900px') : 'none',
-                margin: isImmersive ? '0 auto' : '0',
-                fontSize: isImmersive ? '17px' : '15.5px',
-                lineHeight: isImmersive ? '2.0' : '1.85',
-                transition: 'all 0.25s ease',
-              }}
-            >
-              {/* 沉浸式段落卡片流（1:1 语义锚定与行高镜像） */}
-              {targetBlocks.map(tb => {
-                const metric = blockLayoutMetrics[tb.id];
-                const isSelected = activeSentenceBlockId === tb.id;
-                const isHovered = isSelected || (!activeSentenceBlockId && hoveredBlockId === tb.id);
-                const sourceBlock = sourceBlocks.find(sb => sb.id === tb.id);
-
-                return (
-                  <div
-                    key={tb.id}
-                    id={`target-${tb.id}`}
-                    className={`${styles.bilingualBlockCard} ${isHovered ? styles.bilingualBlockActive : ''}`}
-                    style={{
-                      minHeight: metric ? `${metric.heightPx}px` : undefined,
-                      marginTop: metric ? `${metric.marginTopPx}px` : '14px',
-                    }}
-                    onMouseEnter={() => {
-                      if (!activeSentenceBlockId) {
-                        onHoverBlock?.(tb.id);
-                      }
-                    }}
-                    onMouseLeave={() => {
-                      if (!activeSentenceBlockId) {
-                        onHoverBlock?.(null);
-                      }
-                    }}
-                  >
-                    <div className={styles.bilingualBlockHeader}>
-                      <span className={styles.bilingualBlockBadge}>
-                        ¶ P{pageNumber} · 段落 {tb.blockIndex + 1}
-                      </span>
-                      {sourceBlock && (
-                        <button
-                          type="button"
-                          className={styles.bilingualBlockActionBtn}
-                          onClick={() => onClickBlock?.(tb.id)}
-                          title="定位左侧对应英文段落"
-                        >
-                          定位原文
-                        </button>
-                      )}
-                    </div>
-                    <div className={styles.bilingualBlockContent}>
-                      <BlockContentRenderer
-                        key={tb.id}
-                        blockId={tb.id}
-                        text={tb.text || '翻译中...'}
-                        currentPageClips={currentPageClips}
-                        onClippedSpanClick={onClippedSpanClick}
-                      />
-                    </div>
-                  </div>
-                );
-              })}
-              {isTranslating && <span className={styles.cursorPulse}> ▍</span>}
             </div>
           ) : (
             <div

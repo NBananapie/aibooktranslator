@@ -101,7 +101,10 @@ export function PdfPane({
     const validItems = pdfTextItems.filter(item => item.str && item.str.trim() && item.transform);
     if (validItems.length === 0) return [];
 
-    const pageClips = clips.filter(c => c.pageNumber === pageNumber && c.text && c.text.trim());
+    // 原文左侧 PDF 只对英文/原文剪藏卡片绘制下划线，含有中文字符的译文剪藏绝不跨屏误绘
+    const pageClips = clips.filter(
+      c => c.pageNumber === pageNumber && c.text && c.text.trim() && !/[\u4e00-\u9fa5]/.test(c.text)
+    );
     if (pageClips.length === 0) return [];
 
     const origHeight = pdfOriginalView[3] || 800;
@@ -217,6 +220,7 @@ export function PdfPane({
               {clippedSpans.map(({ clip, rect, key }) => (
                 <span
                   key={key}
+                  data-clip-interactive="true"
                   className={styles.pdfClippedDashedSpan}
                   style={{
                     left: `${rect.left}px`,
