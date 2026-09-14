@@ -221,19 +221,6 @@ export function useBilingualSync(options: UseBilingualSyncOptions) {
       if (matchedItems.length === 0 && /[a-zA-Z0-9]{2,}/.test(cleanZh)) {
         matchedItems = findContiguousItemsForSentence(cleanZh, validItems);
       }
-      if (matchedItems.length === 0 && (matchedBlockId || blockId)) {
-        const targetBId = matchedBlockId || blockId;
-        const sourceBlock = sourceBlocks.find(sb => sb.id === targetBId);
-        if (sourceBlock) {
-          const blockTop = sourceBlock.box.y;
-          const blockBottom = sourceBlock.box.y + sourceBlock.box.height;
-          matchedItems = validItems.filter(item => {
-            const fontSize = Math.round(Math.abs(item.transform[3]) || item.height || 10);
-            const y = origHeight - item.transform[5] - fontSize;
-            return y >= blockTop - 4 && y <= blockBottom + 4;
-          });
-        }
-      }
 
       if (matchedItems.length > 0) {
         const spans = matchedItems.map(item => {

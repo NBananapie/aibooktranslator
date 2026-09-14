@@ -34,6 +34,7 @@ export interface SettingsModalProps {
 export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   const { settings, setSettings } = useAppContext();
   const [formSettings, setFormSettings] = useState<AppSettings>(settings);
+  const isBackdropMouseDownRef = React.useRef(false);
 
   useEffect(() => {
     if (isOpen) {
@@ -43,8 +44,61 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
   if (!isOpen) return null;
 
+  const getPresetKey = (cfg: { baseUrl: string; provider?: string }): string => {
+    if (cfg.baseUrl.includes('agnes-ai.com')) return 'agnes';
+    if (cfg.baseUrl.includes('googleapis.com') || cfg.provider === 'gemini') return 'gemini';
+    if (cfg.baseUrl.includes('minimax')) return 'minimax';
+    return 'openai';
+  };
+
+  const handleApiKeyChange = (newKey: string) => {
+    const currentPKey = getPresetKey(formSettings);
+    setFormSettings(prev => ({
+      ...prev,
+      apiKey: newKey,
+      providerKeys: {
+        ...(prev.providerKeys || {}),
+        [currentPKey]: newKey,
+      },
+    }));
+  };
+
+  const handleSwitchPreset = (preset: typeof PROVIDER_PRESETS[0]) => {
+    const currentPKey = getPresetKey(formSettings);
+    const targetPKey = getPresetKey(preset);
+
+    const updatedKeys = {
+      ...(formSettings.providerKeys || {}),
+      [currentPKey]: formSettings.apiKey,
+    };
+
+    const targetKey =
+      updatedKeys[targetPKey] !== undefined
+        ? updatedKeys[targetPKey]
+        : targetPKey === 'agnes'
+        ? DEFAULT_SETTINGS.apiKey
+        : '';
+
+    setFormSettings({
+      ...formSettings,
+      baseUrl: preset.baseUrl,
+      model: preset.model,
+      provider: preset.provider,
+      apiKey: targetKey,
+      providerKeys: updatedKeys,
+    });
+  };
+
   const saveSettings = () => {
-    setSettings(formSettings);
+    const currentPKey = getPresetKey(formSettings);
+    const finalSettings: AppSettings = {
+      ...formSettings,
+      providerKeys: {
+        ...(formSettings.providerKeys || {}),
+        [currentPKey]: formSettings.apiKey,
+      },
+    };
+    setSettings(finalSettings);
     onClose();
   };
 
@@ -56,7 +110,18 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   };
 
   return (
-    <div className={styles.modalOverlay} onClick={onClose}>
+    <div
+      className={styles.modalOverlay}
+      onMouseDown={e => {
+        isBackdropMouseDownRef.current = e.target === e.currentTarget;
+      }}
+      onClick={e => {
+        if (e.target === e.currentTarget && isBackdropMouseDownRef.current) {
+          onClose();
+        }
+        isBackdropMouseDownRef.current = false;
+      }}
+    >
       <div className={styles.modalContent} onClick={e => e.stopPropagation()}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
           <h2 style={{ fontSize: '16px', display: 'flex', alignItems: 'center', gap: '8px', margin: 0 }}>
@@ -81,12 +146,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                   key={preset.label}
                   type="button"
                   className={`${styles.presetBtn} ${active ? styles.presetBtnActive : ''}`}
-                  onClick={() => setFormSettings({
-                    ...formSettings,
-                    baseUrl: preset.baseUrl,
-                    model: preset.model,
-                    provider: preset.provider
-                  })}
+                  onClick={() => handleSwitchPreset(preset)}
                 >
                   {preset.label}
                 </button>
@@ -103,7 +163,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
           <input 
             type="password" 
             value={formSettings.apiKey} 
-            onChange={e => setFormSettings({ ...formSettings, apiKey: e.target.value })}
+            onChange={e => handleApiKeyChange(e.target.value)}
             placeholder="填入你自己的 API Key (以 sk- 或 AQ. 开头)"
           />
           <p style={hintStyle}>Key 仅加密存储于浏览器本地，不经过任何第三方中转。</p>

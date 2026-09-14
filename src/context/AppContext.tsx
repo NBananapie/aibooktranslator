@@ -15,11 +15,12 @@ export interface AppSettings {
   baseUrl: string;
   model: string;
   provider?: 'openai' | 'gemini' | 'custom';
+  providerKeys?: Record<string, string>;
   customPrompt: string;
   ocr: OcrSettings;
 }
 
-export const SETTINGS_VERSION = 'v5.1-stream-speed';
+export const SETTINGS_VERSION = 'v5.2-multi-key';
 
 export const DEFAULT_OCR_SETTINGS: OcrSettings = {
   enabled: true,
@@ -34,6 +35,12 @@ export const DEFAULT_SETTINGS: AppSettings = {
   baseUrl: 'https://apihub.agnes-ai.com/v1',
   model: 'agnes-3.0-flash',
   provider: 'openai',
+  providerKeys: {
+    'agnes': 'sk-V9RUJxxDq21mUkgN9eVjIdz1Lm7s1h1OUb2SuYVfkjxku0Id',
+    'minimax': '',
+    'gemini': '',
+    'openai': '',
+  },
   customPrompt: `You are an elite bilingual book editor, master translator, and typography architect. Translate the following English text into elegant, publishable Chinese Markdown.
 
 CORE PRINCIPLES:
@@ -93,6 +100,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
           localStorage.setItem('pdf_translator_version', SETTINGS_VERSION);
         }
 
+        const mergedKeys: Record<string, string> = {
+          ...DEFAULT_SETTINGS.providerKeys,
+          ...(parsed.providerKeys || {}),
+        };
+        if (parsed.apiKey) {
+          if (parsed.baseUrl?.includes('agnes-ai.com')) mergedKeys['agnes'] = parsed.apiKey;
+          else if (parsed.baseUrl?.includes('googleapis.com') || parsed.provider === 'gemini') mergedKeys['gemini'] = parsed.apiKey;
+          else if (parsed.baseUrl?.includes('minimax')) mergedKeys['minimax'] = parsed.apiKey;
+          else mergedKeys['openai'] = parsed.apiKey;
+        }
+
         const mergedOcr: OcrSettings = {
           ...DEFAULT_OCR_SETTINGS,
           ...(parsed.ocr || {})
@@ -100,6 +118,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const mergedSettings: AppSettings = {
           ...DEFAULT_SETTINGS,
           ...parsed,
+          providerKeys: mergedKeys,
           ocr: mergedOcr
         };
         localStorage.setItem('pdf_translator_settings', JSON.stringify(mergedSettings));
