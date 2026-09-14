@@ -101,10 +101,9 @@ export function PdfHeader({
               type="button"
               onClick={onStartEditTitle}
               className={styles.iconBtn}
-              style={{ padding: '3px' }}
               data-tooltip="重命名文件名"
             >
-              <Pencil size={12} />
+              <Pencil size={13} />
             </button>
           </div>
         )}

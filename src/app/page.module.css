@@ -676,8 +676,15 @@
 .cardHeader {
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
+  align-items: center;
   gap: 10px;
+}
+
+.cardActions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
 }
 
 .cardTitleRow {
@@ -718,42 +725,61 @@
 }
 
 .iconBtn {
-  background: transparent;
-  border: none;
-  font-size: 14px;
+  background: var(--surface-2);
+  border: 1px solid var(--card-border);
+  color: var(--text-muted);
+  font-size: 13px;
   cursor: pointer;
-  padding: 4px;
-  border-radius: 6px;
-  opacity: 0.6;
-  transition: all 0.2s;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 7px;
+  opacity: 0.9;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex-shrink: 0;
 }
 
 .iconBtn:hover {
   opacity: 1;
+  color: var(--primary);
+  border-color: var(--primary-border);
   background: var(--primary-surface);
-  transform: scale(1.1);
+  transform: translateY(-1px) scale(1.05);
 }
 
 .deleteBtn {
-  background: transparent;
-  border: none;
-  font-size: 15px;
+  background: var(--surface-2);
+  border: 1px solid var(--card-border);
+  color: var(--text-muted);
+  font-size: 13px;
   cursor: pointer;
-  padding: 5px;
-  border-radius: 8px;
-  opacity: 0.5;
-  transition: all 0.2s;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 7px;
+  opacity: 0.9;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex-shrink: 0;
 }
 
 .deleteBtn:hover {
   opacity: 1;
-  background: rgba(244, 63, 94, 0.15);
   color: var(--accent-rose);
-  transform: scale(1.05);
+  border-color: rgba(244, 63, 94, 0.4);
+  background: rgba(244, 63, 94, 0.15);
+  transform: translateY(-1px) scale(1.05);
+}
+
+.historyCard:hover .iconBtn,
+.historyCard:hover .deleteBtn {
+  opacity: 1;
+  border-color: var(--card-border-hover);
 }
 
 .cardBody {

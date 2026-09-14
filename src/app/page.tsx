@@ -226,22 +226,28 @@ export default function Home() {
                           </button>
                         </div>
                       ) : (
-                        <div className={styles.cardTitleRow}>
-                          <h3 data-tooltip={item.filename}>{item.filename}</h3>
-                          <button
-                            className={styles.iconBtn}
-                            onClick={e => startEditingCard(e, item)}
-                            data-tooltip="修改文件名"
-                            style={{ padding: '3px' }}
-                          >
-                            <Pencil size={12} />
-                          </button>
-                        </div>
+                        <>
+                          <div className={styles.cardTitleRow}>
+                            <h3 data-tooltip={item.filename}>{item.filename}</h3>
+                          </div>
+                          <div className={styles.cardActions} onClick={e => e.stopPropagation()}>
+                            <button
+                              className={styles.iconBtn}
+                              onClick={e => startEditingCard(e, item)}
+                              data-tooltip="修改文件名"
+                            >
+                              <Pencil size={13} />
+                            </button>
+                            <button
+                              className={styles.deleteBtn}
+                              onClick={(e) => deleteHistory(e, item.id)}
+                              data-tooltip="删除此记录"
+                            >
+                              <Trash2 size={13} />
+                            </button>
+                          </div>
+                        </>
                       )}
-
-                      <button className={styles.deleteBtn} onClick={(e) => deleteHistory(e, item.id)} data-tooltip="删除此记录">
-                        <Trash2 size={13} />
-                      </button>
                     </div>
 
                     {/* 卡片主体：进度圆环与上次阅读时间 */}
