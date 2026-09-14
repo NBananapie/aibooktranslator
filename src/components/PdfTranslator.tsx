@@ -148,6 +148,7 @@ export default function PdfTranslator() {
     autoTranslate,
     setAutoTranslate,
     isPreTranslating,
+    preloadProgress,
     translationCache,
     translateCurrentPage,
     executeTranslateText,
@@ -396,6 +397,7 @@ export default function PdfTranslator() {
         blockLayoutMetrics={blockLayoutMetrics}
         totalPages={numPages}
         cachedPagesCount={Object.keys(translationCache).length}
+        preloadProgress={preloadProgress}
         onOpenSettings={() => setIsSettingsOpen(true)}
       />
 

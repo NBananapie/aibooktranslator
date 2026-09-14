@@ -49,6 +49,7 @@ export function useTranslator(options: UseTranslatorOptions) {
   const [error, setError] = useState<string>('');
   const [autoTranslate, setAutoTranslate] = useState<boolean>(false);
   const [isPreTranslating, setIsPreTranslating] = useState<boolean>(false);
+  const [preloadProgress, setPreloadProgress] = useState<{ total: number; done: number }>({ total: 0, done: 0 });
   const [translationCache, setTranslationCache] = useState<Record<number, string>>({});
 
   const translationCacheRef = useRef<Record<number, string>>({});
@@ -304,13 +305,19 @@ export function useTranslator(options: UseTranslatorOptions) {
 
       isPreTranslatingRef.current = true;
       setIsPreTranslating(true);
+      setPreloadProgress({ total: pagesToPreload.length, done: 0 });
 
       try {
         const doc = await getPdfDoc();
         if (!doc) return;
 
+        let doneCount = 0;
         for (const targetPage of pagesToPreload) {
-          if (translationCacheRef.current[targetPage]) continue;
+          if (translationCacheRef.current[targetPage]) {
+            doneCount++;
+            setPreloadProgress({ total: pagesToPreload.length, done: doneCount });
+            continue;
+          }
 
           try {
             const page = await doc.getPage(targetPage);
@@ -326,7 +333,11 @@ export function useTranslator(options: UseTranslatorOptions) {
                 : extractPdfTextWithHierarchy(textContent.items as any[]);
 
             // 若后续页无原生文本（空白/纯图片），直接跳过预读，严禁在后台静默跑 OCR
-            if (!promptText.trim()) continue;
+            if (!promptText.trim()) {
+              doneCount++;
+              setPreloadProgress({ total: pagesToPreload.length, done: doneCount });
+              continue;
+            }
 
             const response = await executeTranslateStream({
               text: promptText,
@@ -360,6 +371,9 @@ export function useTranslator(options: UseTranslatorOptions) {
             }
           } catch (err) {
             console.warn(`流水线静默预读第 ${targetPage} 页异常:`, err);
+          } finally {
+            doneCount++;
+            setPreloadProgress({ total: pagesToPreload.length, done: doneCount });
           }
         }
       } catch (err) {
@@ -410,6 +424,7 @@ export function useTranslator(options: UseTranslatorOptions) {
     autoTranslate,
     setAutoTranslate,
     isPreTranslating,
+    preloadProgress,
     translationCache,
     setTranslationCache,
     translationCacheRef,
