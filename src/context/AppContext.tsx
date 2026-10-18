@@ -18,9 +18,11 @@ export interface AppSettings {
   providerKeys?: Record<string, string>;
   customPrompt: string;
   ocr: OcrSettings;
+  syncKey?: string;
+  autoCloudSync?: boolean;
 }
 
-export const SETTINGS_VERSION = 'v5.2-multi-key';
+export const SETTINGS_VERSION = 'v5.3-cloud-sync';
 
 export const DEFAULT_OCR_SETTINGS: OcrSettings = {
   enabled: true,
@@ -41,6 +43,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
     'gemini': '',
     'openai': '',
   },
+  syncKey: '',
+  autoCloudSync: true,
   customPrompt: `You are an elite bilingual book editor, master translator, and typography architect. Translate the following English text into elegant, publishable Chinese Markdown.
 
 CORE PRINCIPLES:

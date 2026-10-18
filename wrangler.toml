@@ -1,4 +1,9 @@
-name = "bookreader"
+name = "aibooktranslator"
 compatibility_date = "2024-04-03"
 compatibility_flags = ["nodejs_compat"]
 pages_build_output_dir = ".vercel/output/static"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "bookreader-db"
+database_id = "94110e17-45e0-46c9-ade6-67db850b0d02"

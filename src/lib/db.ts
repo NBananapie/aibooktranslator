@@ -9,6 +9,7 @@ export interface ClipItem {
 
 export interface HistoryRecord {
   id: string;
+  fingerprint?: string; // SHA-256 PDF内容指纹
   filename: string;
   date: number;
   lastReadTime?: number;
@@ -17,6 +18,13 @@ export interface HistoryRecord {
   pdfData: ArrayBuffer;
   translations: Record<number, string>;
   clips?: ClipItem[];
+}
+
+export async function calculatePdfFingerprint(arrayBuffer: ArrayBuffer): Promise<string> {
+  const hashBuffer = await crypto.subtle.digest('SHA-256', arrayBuffer);
+  return Array.from(new Uint8Array(hashBuffer))
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('');
 }
 
 const DB_NAME = 'PdfTranslatorDB';
@@ -100,6 +108,21 @@ export async function deleteHistoryClip(id: string, clipId: string): Promise<voi
   await saveHistoryRecord(record);
 }
 
+export async function getHistoryRecordByFingerprint(fingerprint: string): Promise<HistoryRecord | undefined> {
+  const db = await getDB();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(STORE_NAME, 'readonly');
+    const store = transaction.objectStore(STORE_NAME);
+    const request = store.getAll();
+
+    request.onsuccess = () => {
+      const found = (request.result as HistoryRecord[]).find(r => r.fingerprint === fingerprint);
+      resolve(found);
+    };
+    request.onerror = () => reject(request.error);
+  });
+}
+
 export async function getAllHistoryMetadata(): Promise<Omit<HistoryRecord, 'pdfData'>[]> {
   const db = await getDB();
   return new Promise((resolve, reject) => {
@@ -111,6 +134,7 @@ export async function getAllHistoryMetadata(): Promise<Omit<HistoryRecord, 'pdfD
       // Strip out the heavy pdfData to return just metadata for the list
       const records = request.result.map(record => ({
         id: record.id,
+        fingerprint: record.fingerprint,
         filename: record.filename,
         date: record.date,
         lastReadTime: record.lastReadTime || record.date,

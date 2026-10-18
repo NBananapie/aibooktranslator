@@ -8,6 +8,7 @@ import { useRouter } from 'next/navigation';
 import { ClipItem } from '@/lib/db';
 import { exportTranslationsAsMarkdown } from '@/services/exportService';
 import { capturePageCanvasAsBase64, requestPaddleOcr } from '@/services/ocrService';
+import { fetchBookFromCloud, mergeCloudDataIntoLocal } from '@/services/cloudSyncService';
 import { usePdfDocument } from '@/hooks/usePdfDocument';
 import { useTranslator } from '@/hooks/useTranslator';
 import { useBilingualSync } from '@/hooks/useBilingualSync';
@@ -54,6 +55,20 @@ export default function PdfTranslator() {
     onDocumentLoadSuccess,
     pdfDocument,
   } = usePdfDocument({ activeFileId });
+
+  // 自动从 Cloudflare D1 拉取云端最新翻译与剪藏数据
+  React.useEffect(() => {
+    if (!dbRecord?.fingerprint || !settings.syncKey?.trim() || settings.autoCloudSync === false) return;
+
+    fetchBookFromCloud(settings.syncKey, dbRecord.fingerprint)
+      .then(async cloudData => {
+        if (cloudData) {
+          const merged = await mergeCloudDataIntoLocal(dbRecord, cloudData);
+          setDbRecord(merged);
+        }
+      })
+      .catch(e => console.error('Cloud pull error', e));
+  }, [dbRecord?.fingerprint, settings.syncKey, settings.autoCloudSync]);
 
   // 2. OCR 状态与视图切换
   const [ocrCache, setOcrCache] = useState<Record<number, string>>({});
