@@ -10,7 +10,12 @@ import {
   Sparkles,
   ScanText,
   X,
+  Cloud,
+  Key,
+  RefreshCw,
+  Check,
 } from 'lucide-react';
+import { testCloudSyncConnection } from '@/services/cloudSyncService';
 
 const PROVIDER_PRESETS: { label: string; baseUrl: string; model: string; provider: 'openai' | 'gemini' | 'custom' }[] = [
   { label: 'Agnes (3.0 Flash 默认)', baseUrl: 'https://apihub.agnes-ai.com/v1', model: 'agnes-3.0-flash', provider: 'openai' },
@@ -34,13 +39,51 @@ export interface SettingsModalProps {
 export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   const { settings, setSettings } = useAppContext();
   const [formSettings, setFormSettings] = useState<AppSettings>(settings);
+  const [syncTestStatus, setSyncTestStatus] = useState<{ testing: boolean; message?: string; success?: boolean }>({
+    testing: false,
+  });
   const isBackdropMouseDownRef = React.useRef(false);
 
   useEffect(() => {
     if (isOpen) {
       setFormSettings(settings);
+      setSyncTestStatus({ testing: false });
     }
   }, [isOpen, settings]);
+
+  const generateRandomSyncKey = () => {
+    const chars = 'abcdefghjkmnpqrstuvwxyz23456789';
+    let key = 'sync-';
+    for (let i = 0; i < 3; i++) {
+      for (let j = 0; j < 4; j++) {
+        key += chars[Math.floor(Math.random() * chars.length)];
+      }
+      if (i < 2) key += '-';
+    }
+    setFormSettings(prev => ({ ...prev, syncKey: key }));
+  };
+
+  const handleTestSync = async () => {
+    if (!formSettings.syncKey?.trim()) {
+      setSyncTestStatus({ testing: false, success: false, message: '请先输入或生成同步口令' });
+      return;
+    }
+    setSyncTestStatus({ testing: true, message: '正在测试与 Cloudflare D1 的连接...' });
+    const result = await testCloudSyncConnection(formSettings.syncKey);
+    if (result.success) {
+      setSyncTestStatus({
+        testing: false,
+        success: true,
+        message: `连接成功！云端已有此口令下的 ${result.count} 本书籍同步记录。`,
+      });
+    } else {
+      setSyncTestStatus({
+        testing: false,
+        success: false,
+        message: `连接失败: ${result.error}`,
+      });
+    }
+  };
 
   if (!isOpen) return null;
 
@@ -321,6 +364,71 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             })}
             placeholder="https://paddleocr.aistudio-app.com/api/v2/ocr/jobs"
           />
+        </div>
+
+        {/* 云端多端数据同步 (Cloudflare D1) */}
+        <div className={styles.settingsDivider} />
+        <div className={styles.formGroup}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <Cloud size={15} style={{ color: 'var(--primary)' }} /> 云端多端同步口令 (Cloudflare D1)
+            </label>
+            <button
+              type="button"
+              className={styles.btnSecondary}
+              style={{ padding: '2px 8px', fontSize: '11px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+              onClick={generateRandomSyncKey}
+            >
+              <Key size={11} /> 随机生成新口令
+            </button>
+          </div>
+          <div style={{ display: 'flex', gap: '8px', marginTop: '6px' }}>
+            <input
+              type="text"
+              value={formSettings.syncKey || ''}
+              onChange={e => setFormSettings({ ...formSettings, syncKey: e.target.value })}
+              placeholder="输入或生成同步口令 (例如: sync-a8f2-9c1e)"
+              style={{ flex: 1 }}
+            />
+            <button
+              type="button"
+              className={styles.btnSecondary}
+              style={{ padding: '0 12px', fontSize: '12px', whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: '5px' }}
+              onClick={handleTestSync}
+              disabled={syncTestStatus.testing}
+            >
+              <RefreshCw size={12} className={syncTestStatus.testing ? styles.spinAnim : ''} />
+              {syncTestStatus.testing ? '检测中' : '测试连接'}
+            </button>
+          </div>
+          {syncTestStatus.message && (
+            <p style={{
+              fontSize: '12px',
+              marginTop: '6px',
+              color: syncTestStatus.success ? '#10b981' : 'var(--accent-rose)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '4px',
+            }}>
+              {syncTestStatus.success ? <Check size={12} /> : null}
+              {syncTestStatus.message}
+            </p>
+          )}
+          <p style={hintStyle}>
+            无需上传大体积 PDF。在不同设备输入相同口令并打开本地 PDF，系统将通过内容哈希自动拉取所有翻译与剪藏。
+          </p>
+        </div>
+
+        <div className={styles.formGroup} style={{ marginTop: '4px' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '12.5px' }}>
+            <input
+              type="checkbox"
+              checked={formSettings.autoCloudSync !== false}
+              onChange={e => setFormSettings({ ...formSettings, autoCloudSync: e.target.checked })}
+              style={{ width: '15px', height: '15px', accentColor: 'var(--primary)' }}
+            />
+            <span>翻译或剪藏时自动静默增量同步至 Cloudflare D1</span>
+          </label>
         </div>
 
         {/* 系统提示词 */}

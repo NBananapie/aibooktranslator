@@ -14,6 +14,7 @@ import {
   BilingualMapEntry,
 } from '@/services/alignmentEngine';
 import { analyzePageLayout, SourceBlock } from '@/services/layoutAnalysisEngine';
+import { pushBookToCloud } from '@/services/cloudSyncService';
 
 export interface UseTranslatorOptions {
   file: File | null;
@@ -57,6 +58,7 @@ export function useTranslator(options: UseTranslatorOptions) {
   const currentPageRef = useRef<number>(pageNumber);
   const abortControllerRef = useRef<AbortController | null>(null);
   const lastParsedRawRef = useRef<string>('');
+  const cloudSyncTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   // 1. 平滑打字机动画调度器
   useEffect(() => {
@@ -141,8 +143,18 @@ export function useTranslator(options: UseTranslatorOptions) {
       };
       setDbRecord(updatedRecord);
       saveHistoryRecord(updatedRecord).catch(e => console.error('Save history error', e));
+
+      // 自动静默增量同步至 Cloudflare D1
+      if (settings?.syncKey?.trim() && settings?.autoCloudSync !== false && updatedRecord.fingerprint) {
+        if (cloudSyncTimerRef.current) clearTimeout(cloudSyncTimerRef.current);
+        cloudSyncTimerRef.current = setTimeout(() => {
+          pushBookToCloud(updatedRecord, settings.syncKey!).catch(err =>
+            console.error('Auto cloud sync error', err)
+          );
+        }, 1200);
+      }
     }
-  }, [translationCache, numPages]);
+  }, [translationCache, numPages, settings?.syncKey, settings?.autoCloudSync]);
 
   // 4. 执行翻译文本流
   const executeTranslateText = async (sourceText: string, targetPage: number) => {

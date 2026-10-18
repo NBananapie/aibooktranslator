@@ -3,7 +3,21 @@
 import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAppContext } from '@/context/AppContext';
-import { getAllHistoryMetadata, saveHistoryRecord, HistoryRecord, deleteHistoryRecord, updateHistoryFilename } from '@/lib/db';
+import {
+  getAllHistoryMetadata,
+  saveHistoryRecord,
+  HistoryRecord,
+  deleteHistoryRecord,
+  updateHistoryFilename,
+  getHistoryRecordByFingerprint,
+  calculatePdfFingerprint,
+} from '@/lib/db';
+import {
+  fetchBookFromCloud,
+  mergeCloudDataIntoLocal,
+  fetchCloudBookshelf,
+  CloudBookMeta,
+} from '@/services/cloudSyncService';
 import { ProgressRing } from '@/components/ProgressRing';
 import { SettingsModal } from '@/components/SettingsModal';
 import styles from './page.module.css';
@@ -15,7 +29,9 @@ import {
   Pencil,
   Trash2,
   Check,
-  X
+  X,
+  Cloud,
+  DownloadCloud,
 } from 'lucide-react';
 
 function formatTime(timestamp?: number): string {
@@ -31,8 +47,9 @@ function formatTime(timestamp?: number): string {
 
 export default function Home() {
   const router = useRouter();
-  const { setActiveFileId, theme, toggleTheme } = useAppContext();
+  const { settings, setActiveFileId, theme, toggleTheme } = useAppContext();
   const [history, setHistory] = useState<Omit<HistoryRecord, 'pdfData'>[]>([]);
+  const [cloudBooks, setCloudBooks] = useState<CloudBookMeta[]>([]);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
 
@@ -48,6 +65,12 @@ export default function Home() {
     try {
       const records = await getAllHistoryMetadata();
       setHistory(records);
+
+      if (settings.syncKey?.trim()) {
+        fetchCloudBookshelf(settings.syncKey)
+          .then(cb => setCloudBooks(cb || []))
+          .catch(e => console.error('Failed to load cloud bookshelf', e));
+      }
     } catch (err) {
       console.error("Failed to load history", err);
     }
@@ -59,22 +82,45 @@ export default function Home() {
       return;
     }
     
-    // Create new DB record
-    const id = crypto.randomUUID();
     const arrayBuffer = await file.arrayBuffer();
-    
-    const record: HistoryRecord = {
-      id,
-      filename: file.name,
-      date: Date.now(),
-      lastReadTime: Date.now(),
-      pdfData: arrayBuffer,
-      translations: {},
-    };
+    const fingerprint = await calculatePdfFingerprint(arrayBuffer);
+
+    // 1. 优先通过指纹查找本地是否已有此书
+    let record = await getHistoryRecordByFingerprint(fingerprint);
+
+    if (record) {
+      record.pdfData = arrayBuffer;
+      record.lastReadTime = Date.now();
+      if (!record.filename) record.filename = file.name;
+    } else {
+      const id = crypto.randomUUID();
+      record = {
+        id,
+        fingerprint,
+        filename: file.name,
+        date: Date.now(),
+        lastReadTime: Date.now(),
+        pdfData: arrayBuffer,
+        translations: {},
+        clips: [],
+      };
+    }
+
+    // 2. 如果开启了云端同步口令，合并拉取云端已有译文与剪藏
+    if (settings.syncKey?.trim()) {
+      try {
+        const cloudData = await fetchBookFromCloud(settings.syncKey, fingerprint);
+        if (cloudData) {
+          record = await mergeCloudDataIntoLocal(record, cloudData);
+        }
+      } catch (err) {
+        console.error('Failed to pull from cloud on file upload', err);
+      }
+    }
 
     try {
       await saveHistoryRecord(record);
-      setActiveFileId(id);
+      setActiveFileId(record.id);
       router.push('/translate');
     } catch (err) {
       console.error("Failed to save file to DB", err);
@@ -141,11 +187,35 @@ export default function Home() {
     loadHistory();
   };
 
+  const unimportedCloudBooks = cloudBooks.filter(
+    cb => !history.some(h => h.fingerprint === cb.book_fingerprint)
+  );
+
   return (
     <div className={styles.homeContainer}>
       <header className={styles.homeHeader}>
-        <div className={styles.brand}>
+        <div className={styles.brand} style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
           <h1>AI PDF Translator</h1>
+          {settings.syncKey?.trim() ? (
+            <span
+              className={styles.badge}
+              style={{ fontSize: '11px', display: 'inline-flex', alignItems: 'center', gap: '4px', cursor: 'pointer' }}
+              onClick={() => setIsSettingsOpen(true)}
+              data-tooltip={`已连接 Cloudflare D1 云端同步 (口令: ${settings.syncKey})`}
+            >
+              <Cloud size={12} /> 云端已同步
+            </span>
+          ) : (
+            <button
+              type="button"
+              className={styles.badgeSubtle}
+              style={{ fontSize: '11px', cursor: 'pointer', background: 'none', border: '1px solid var(--glass-border)' }}
+              onClick={() => setIsSettingsOpen(true)}
+              data-tooltip="点击配置多端同步口令"
+            >
+              配置云端同步
+            </button>
+          )}
         </div>
         <div className={styles.controls}>
           <button 
@@ -194,8 +264,26 @@ export default function Home() {
 
         {/* History Section */}
         <div className={styles.historySection}>
-          <h2>已上传</h2>
-          {history.length === 0 ? (
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
+            <h2 style={{ margin: 0 }}>我的文档与云端书架</h2>
+            {settings.syncKey?.trim() && (
+              <span
+                style={{
+                  fontSize: '12px',
+                  color: 'var(--primary)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '5px',
+                  cursor: 'pointer',
+                }}
+                onClick={() => setIsSettingsOpen(true)}
+              >
+                <Cloud size={13} /> Cloudflare D1 已连接
+              </span>
+            )}
+          </div>
+
+          {history.length === 0 && unimportedCloudBooks.length === 0 ? (
             <div className={styles.emptyText}>暂无已上传的文档，上传 PDF 即可开启实时精读与 OCR 结构化解析</div>
           ) : (
             <div className={styles.historyList}>
@@ -278,6 +366,52 @@ export default function Home() {
                   </div>
                 );
               })}
+
+              {/* 云端已有历史记录但本机尚未载入本地 PDF 的书籍 */}
+              {unimportedCloudBooks.map(cb => (
+                <div
+                  key={cb.book_fingerprint}
+                  className={styles.historyCard}
+                  style={{ borderStyle: 'dashed', opacity: 0.88, cursor: 'pointer' }}
+                  onClick={() => {
+                    alert(`云端已收录《${cb.filename}》的翻译记录！\n\n请直接在上方上传区拖入本地对应的「${cb.filename}」文件，系统将通过内容哈希自动拉取所有翻译。`);
+                    document.getElementById('file-upload')?.click();
+                  }}
+                  data-tooltip="云端已有此书翻译记录！点击上传对应本地 PDF 即可立即载入"
+                >
+                  <div className={styles.cardHeader}>
+                    <div className={styles.cardTitleRow}>
+                      <h3 data-tooltip={cb.filename} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <Cloud size={14} style={{ color: 'var(--primary)', flexShrink: 0 }} />
+                        {cb.filename}
+                      </h3>
+                    </div>
+                  </div>
+
+                  <div className={styles.cardBody}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '48px', height: '48px', borderRadius: '50%', background: 'var(--primary-surface)', color: 'var(--primary)' }}>
+                      <DownloadCloud size={24} />
+                    </div>
+                    <div className={styles.cardProgressMeta}>
+                      <div className={styles.cardBadgeRow}>
+                        <span className={styles.badge}>云端译文已就绪</span>
+                        {cb.total_pages > 0 && (
+                          <span className={styles.badgeSubtle}>共 {cb.total_pages} 页</span>
+                        )}
+                      </div>
+                      <div className={styles.lastReadTimeRow}>
+                        <span>云端同步于: {formatTime(cb.updated_at)}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className={styles.cardFooter} style={{ borderTop: '1px dashed var(--glass-border)' }}>
+                    <span style={{ fontSize: '12px', color: 'var(--primary)', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                      <DownloadCloud size={13} /> 待载入本地 PDF
+                    </span>
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </div>

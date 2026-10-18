@@ -8,6 +8,7 @@ import {
   HistoryRecord,
   updateHistoryFilename,
   updateHistoryProgress,
+  calculatePdfFingerprint,
 } from '@/lib/db';
 
 export interface UsePdfDocumentOptions {
@@ -44,8 +45,16 @@ export function usePdfDocument(options: UsePdfDocumentOptions) {
   // 1. 初始化从 IndexedDB 加载文档记录
   useEffect(() => {
     if (!activeFileId) return;
-    getHistoryRecord(activeFileId).then(record => {
+    getHistoryRecord(activeFileId).then(async record => {
       if (record) {
+        if (!record.fingerprint && record.pdfData) {
+          try {
+            record.fingerprint = await calculatePdfFingerprint(record.pdfData);
+            await saveHistoryRecord(record);
+          } catch (e) {
+            console.error('Calculate fingerprint error', e);
+          }
+        }
         setDbRecord(record);
         setFile(new File([record.pdfData], record.filename, { type: 'application/pdf' }));
         setEditTitleValue(record.filename);
