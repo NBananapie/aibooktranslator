@@ -17,10 +17,14 @@ import {
   Loader2,
   RotateCw,
   Settings as SettingsIcon,
+  Minus,
+  Plus,
 } from 'lucide-react';
 import { ProgressRing } from '@/components/ProgressRing';
 
 export interface MarkdownHeaderProps {
+  fontSize?: number;
+  setFontSize?: (size: number | ((prev: number) => number)) => void;
   isImmersive: boolean;
   viewMode: 'translation' | 'ocr_source';
   isTranslating: boolean;
@@ -53,6 +57,8 @@ export interface MarkdownHeaderProps {
 }
 
 export function MarkdownHeader({
+  fontSize = 16,
+  setFontSize,
   isImmersive,
   viewMode,
   isTranslating,
@@ -83,6 +89,34 @@ export function MarkdownHeader({
   onTranslateCurrentPage,
   onOpenSettings,
 }: MarkdownHeaderProps) {
+  const [isFontMenuOpen, setIsFontMenuOpen] = React.useState(false);
+  const fontMenuRef = React.useRef<HTMLDivElement>(null);
+  const fontBtnRef = React.useRef<HTMLButtonElement>(null);
+
+  React.useEffect(() => {
+    if (!isFontMenuOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (
+        fontMenuRef.current &&
+        !fontMenuRef.current.contains(e.target as Node) &&
+        fontBtnRef.current &&
+        !fontBtnRef.current.contains(e.target as Node)
+      ) {
+        setIsFontMenuOpen(false);
+      }
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setIsFontMenuOpen(false);
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isFontMenuOpen]);
+
   return (
     <div className={styles.header}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -146,6 +180,148 @@ export function MarkdownHeader({
         >
           {theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
         </button>
+
+        <div style={{ position: 'relative' }}>
+          <button
+            ref={fontBtnRef}
+            type="button"
+            className={`${styles.topNavIconBtn} ${isFontMenuOpen ? styles.topNavIconBtnActive : ''}`}
+            onClick={() => setIsFontMenuOpen(prev => !prev)}
+            data-tooltip={`调节译文字号 (${fontSize}px)`}
+          >
+            <span style={{ fontWeight: 700, fontSize: '12.5px', fontFamily: 'serif' }}>Aa</span>
+          </button>
+
+          {isFontMenuOpen && setFontSize && (
+            <div ref={fontMenuRef} className={styles.fontDropdownMenu}>
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  fontSize: '12px',
+                  fontWeight: 600,
+                }}
+              >
+                <span style={{ color: 'var(--foreground)' }}>字号调节</span>
+                <button
+                  type="button"
+                  onClick={() => setFontSize(16)}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: 'var(--primary)',
+                    fontSize: '11px',
+                    cursor: 'pointer',
+                    padding: '2px 4px',
+                  }}
+                >
+                  恢复默认
+                </button>
+              </div>
+
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  background: 'var(--background)',
+                  borderRadius: '8px',
+                  padding: '4px 6px',
+                  border: '1px solid var(--glass-border)',
+                }}
+              >
+                <button
+                  type="button"
+                  disabled={fontSize <= 12}
+                  onClick={() => setFontSize((s: number) => Math.max(12, s - 1))}
+                  style={{
+                    width: '28px',
+                    height: '28px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    borderRadius: '6px',
+                    border: 'none',
+                    background: 'var(--card-bg)',
+                    color: 'var(--foreground)',
+                    cursor: fontSize <= 12 ? 'not-allowed' : 'pointer',
+                    opacity: fontSize <= 12 ? 0.4 : 1,
+                  }}
+                  title="缩小字号"
+                >
+                  <Minus size={13} />
+                </button>
+
+                <span
+                  style={{
+                    fontSize: '13.5px',
+                    fontWeight: 700,
+                    color: 'var(--foreground)',
+                    minWidth: '48px',
+                    textAlign: 'center',
+                  }}
+                >
+                  {fontSize}px
+                </span>
+
+                <button
+                  type="button"
+                  disabled={fontSize >= 28}
+                  onClick={() => setFontSize((s: number) => Math.min(28, s + 1))}
+                  style={{
+                    width: '28px',
+                    height: '28px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    borderRadius: '6px',
+                    border: 'none',
+                    background: 'var(--card-bg)',
+                    color: 'var(--foreground)',
+                    cursor: fontSize >= 28 ? 'not-allowed' : 'pointer',
+                    opacity: fontSize >= 28 ? 0.4 : 1,
+                  }}
+                  title="放大字号"
+                >
+                  <Plus size={13} />
+                </button>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '4px' }}>
+                {[
+                  { label: '小', size: 14 },
+                  { label: '标准', size: 16 },
+                  { label: '大', size: 18 },
+                  { label: '特大', size: 21 },
+                ].map(preset => {
+                  const isActive = fontSize === preset.size;
+                  return (
+                    <button
+                      key={preset.size}
+                      type="button"
+                      onClick={() => setFontSize(preset.size)}
+                      style={{
+                        padding: '5px 0',
+                        fontSize: '11px',
+                        borderRadius: '6px',
+                        border: isActive ? '1px solid var(--primary)' : '1px solid var(--glass-border)',
+                        background: isActive ? 'var(--primary-surface)' : 'var(--background)',
+                        color: isActive ? 'var(--primary)' : 'var(--foreground)',
+                        fontWeight: isActive ? 700 : 500,
+                        cursor: 'pointer',
+                        textAlign: 'center',
+                        transition: 'all 0.15s ease',
+                      }}
+                    >
+                      {preset.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
 
         {isImmersive && (
           <button

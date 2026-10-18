@@ -21,7 +21,7 @@ import { ReaderOverlays } from './reader/ReaderOverlays';
 import { SettingsModal } from './SettingsModal';
 
 export default function PdfTranslator() {
-  const { settings, activeFileId, theme, toggleTheme } = useAppContext();
+  const { settings, activeFileId, theme, toggleTheme, fontSize, setFontSize } = useAppContext();
   const router = useRouter();
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
@@ -348,6 +348,8 @@ export default function PdfTranslator() {
         hasCachedTranslation={!!translationCache[pageNumber]}
         hasOcrCache={!!ocrCache[pageNumber]}
         theme={theme}
+        fontSize={fontSize}
+        setFontSize={setFontSize}
         fullWidthReading={fullWidthReading}
         fileAvailable={!!file}
         hasAnyTranslationCache={Object.keys(translationCache).length > 0}

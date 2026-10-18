@@ -56,6 +56,8 @@ CORE PRINCIPLES:
   ocr: DEFAULT_OCR_SETTINGS,
 };
 
+export const DEFAULT_FONT_SIZE = 16;
+
 interface AppContextType {
   settings: AppSettings;
   setSettings: (settings: AppSettings) => void;
@@ -64,6 +66,8 @@ interface AppContextType {
   theme: 'dark' | 'light';
   setTheme: (theme: 'dark' | 'light') => void;
   toggleTheme: () => void;
+  fontSize: number;
+  setFontSize: (size: number | ((prev: number) => number)) => void;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -72,6 +76,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [settings, setSettingsState] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [activeFileId, setActiveFileId] = useState<string | null>(null);
   const [theme, setThemeState] = useState<'dark' | 'light'>('dark');
+  const [fontSize, setFontSizeState] = useState<number>(DEFAULT_FONT_SIZE);
   const [isLoaded, setIsLoaded] = useState(false);
 
   useEffect(() => {
@@ -137,6 +142,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setThemeState(initialTheme);
     document.documentElement.setAttribute('data-theme', initialTheme);
 
+    // Load font size from localStorage
+    const savedFontSize = localStorage.getItem('reader_font_size');
+    if (savedFontSize) {
+      const parsed = parseFloat(savedFontSize);
+      if (!isNaN(parsed) && parsed >= 12 && parsed <= 32) {
+        setFontSizeState(parsed);
+      }
+    }
+
     setIsLoaded(true);
   }, []);
 
@@ -156,6 +170,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setTheme(nextTheme);
   };
 
+  const setFontSize = (sizeOrUpdater: number | ((prev: number) => number)) => {
+    setFontSizeState(prev => {
+      const nextSize = typeof sizeOrUpdater === 'function' ? sizeOrUpdater(prev) : sizeOrUpdater;
+      const clamped = Math.max(12, Math.min(32, Math.round(nextSize * 10) / 10));
+      localStorage.setItem('reader_font_size', clamped.toString());
+      return clamped;
+    });
+  };
+
   if (!isLoaded) return null; // Prevent hydration mismatch
 
   return (
@@ -166,7 +189,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setActiveFileId, 
       theme, 
       setTheme, 
-      toggleTheme 
+      toggleTheme,
+      fontSize,
+      setFontSize
     }}>
       {children}
     </AppContext.Provider>

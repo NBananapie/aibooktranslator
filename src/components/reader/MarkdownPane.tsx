@@ -200,6 +200,8 @@ export function MarkdownPane({
   onClickBlock,
   blockLayoutMetrics = {},
   markdownContainerRef,
+  fontSize = 16,
+  setFontSize,
   ...headerProps
 }: MarkdownPaneProps) {
   const internalMarkdownContainerRef = useRef<HTMLDivElement>(null);
@@ -219,6 +221,8 @@ export function MarkdownPane({
       }}
     >
       <MarkdownHeader
+        fontSize={fontSize}
+        setFontSize={setFontSize}
         isImmersive={isImmersive}
         viewMode={viewMode}
         isTranslating={isTranslating}
@@ -233,6 +237,7 @@ export function MarkdownPane({
           ref={containerRefToUse}
           onMouseUp={onMarkdownSelection}
           onKeyUp={onMarkdownSelection}
+          style={{ '--reader-font-size': `${fontSize}px` } as React.CSSProperties}
         >
           {isTranslating && !displayedText && targetBlocks.length === 0 ? (
             <div className={styles.loadingOverlay}>
@@ -258,7 +263,16 @@ export function MarkdownPane({
               {error}
             </div>
           ) : viewMode === 'ocr_source' && ocrText ? (
-            <div className={styles.ocrContent}>
+            <div
+              className={styles.ocrContent}
+              style={{
+                maxWidth: isImmersive ? (fullWidthReading ? '100%' : '900px') : 'none',
+                margin: isImmersive ? '0 auto' : '0',
+                fontSize: `${fontSize}px`,
+                lineHeight: isImmersive ? '2.0' : '1.85',
+                transition: 'font-size 0.2s ease, max-width 0.25s ease',
+              }}
+            >
               <div
                 style={{
                   display: 'flex',
@@ -303,9 +317,9 @@ export function MarkdownPane({
               style={{
                 maxWidth: isImmersive ? (fullWidthReading ? '100%' : '900px') : 'none',
                 margin: isImmersive ? '0 auto' : '0',
-                fontSize: isImmersive ? '17px' : '15.5px',
+                fontSize: `${fontSize}px`,
                 lineHeight: isImmersive ? '2.0' : '1.85',
-                transition: 'all 0.25s ease',
+                transition: 'font-size 0.2s ease, max-width 0.25s ease',
               }}
             >
               <BlockContentRenderer
