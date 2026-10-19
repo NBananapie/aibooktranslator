@@ -1109,39 +1109,146 @@
   box-shadow: 0 2px 8px var(--primary-glow);
 }
 
-/* === 模糊飞入吸入动效 (Ghost Flying Effect) === */
-.ghostFlyingItem {
+/* === 高级非线性物理吸入动效 (Non-linear Suction & Motion Blur) === */
+.ghostFlyingContainer {
   position: fixed;
-  z-index: 9999;
+  z-index: 99999;
   pointer-events: none;
-  background: var(--primary-surface);
-  border: 1px solid var(--primary);
+  transform-origin: center center;
+  animation: ghostSuctionFlight 0.65s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  will-change: transform, filter, opacity;
+}
+
+.ghostFlyingCard {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.28) 0%, rgba(217, 119, 6, 0.18) 100%);
+  border: 1.5px solid rgba(245, 158, 11, 0.85);
   color: var(--primary);
-  padding: 8px 14px;
-  border-radius: 10px;
+  padding: 8px 16px;
+  border-radius: 12px;
   font-size: 13px;
   font-weight: 600;
-  box-shadow: 0 8px 24px var(--primary-glow);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  box-shadow: 0 10px 30px rgba(245, 158, 11, 0.35), 0 0 20px rgba(245, 158, 11, 0.2) inset;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 260px;
   box-sizing: border-box;
-  transform-origin: center center;
-  transition: transform 0.5s cubic-bezier(0.25, 1, 0.5, 1), opacity 0.5s cubic-bezier(0.25, 1, 0.5, 1);
-  will-change: transform, opacity;
+}
+
+.ghostFlyIcon {
+  flex-shrink: 0;
+  color: var(--primary);
+  filter: drop-shadow(0 0 6px rgba(245, 158, 11, 0.8));
+}
+
+.ghostFlyLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 动效拖尾光晕光带 */
+.ghostFlyingTrail {
+  position: absolute;
+  inset: -4px;
+  border-radius: 16px;
+  background: radial-gradient(circle, rgba(245, 158, 11, 0.4) 0%, transparent 75%);
+  filter: blur(8px);
+  z-index: -1;
+  animation: ghostTrailPulse 0.65s ease-out forwards;
+}
+
+@keyframes ghostTrailPulse {
+  0% { opacity: 0.4; transform: scale(0.9); }
+  50% { opacity: 1; transform: scale(1.15); }
+  100% { opacity: 0; transform: scale(0.5); }
+}
+
+/* 非线性吸入与运动模糊形变关键帧 */
+@keyframes ghostSuctionFlight {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1) rotate(0deg) skew(0deg, 0deg);
+    filter: blur(0px) drop-shadow(0 4px 12px rgba(245, 158, 11, 0.2));
+    opacity: 1;
+  }
+  22% {
+    /* 升空弹射与反冲膨胀（Anticipation & Squash） */
+    transform: translate3d(calc(var(--delta-x) * 0.1), calc(var(--delta-y) * 0.04 - 30px), 0)
+               scale(1.1, 0.9)
+               rotate(-5deg)
+               skew(-8deg, 3deg);
+    filter: blur(0.8px) drop-shadow(0 8px 24px rgba(245, 158, 11, 0.55));
+    opacity: 0.98;
+  }
+  60% {
+    /* 极速滑翔期：强烈沿飞行切线方向拉伸、3D倾斜与动态运动模糊 (Motion Blur & Stretch) */
+    transform: translate3d(calc(var(--delta-x) * 0.62), calc(var(--delta-y) * 0.55 - 18px), 0)
+               scale(0.72, 1.32)
+               rotate(18deg)
+               skew(20deg, -6deg);
+    filter: blur(3.5px) drop-shadow(0 12px 36px rgba(245, 158, 11, 0.9)) brightness(1.25);
+    opacity: 0.9;
+  }
+  88% {
+    /* 强引力吸扯与面条化形变 (Spaghettification & Tidal Compression) */
+    transform: translate3d(calc(var(--delta-x) * 0.93), calc(var(--delta-y) * 0.93), 0)
+               scale(0.24, 0.46)
+               rotate(28deg)
+               skew(26deg, -12deg);
+    filter: blur(4.5px) drop-shadow(0 0 28px var(--primary)) brightness(1.6);
+    opacity: 0.6;
+  }
+  100% {
+    /* 彻底吸入奇点完全没入 */
+    transform: translate3d(var(--delta-x), var(--delta-y), 0)
+               scale(0.02, 0.02)
+               rotate(40deg);
+    filter: blur(6px) brightness(2.8);
+    opacity: 0;
+  }
+}
+
+/* 侧边栏按钮接收共振涟漪 */
+.toggleBtnAbsorbPulse {
+  animation: toggleBtnAbsorbPulseKeyframe 0.55s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes toggleBtnAbsorbPulseKeyframe {
+  0% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.7);
+  }
+  35% {
+    transform: scale(1.36);
+    box-shadow: 0 0 22px 6px rgba(245, 158, 11, 0.85);
+    background: var(--primary-surface);
+    color: var(--primary);
+  }
+  70% {
+    transform: scale(0.95);
+    box-shadow: 0 0 14px 2px rgba(245, 158, 11, 0.4);
+  }
+  100% {
+    transform: scale(1);
+    box-shadow: none;
+  }
 }
 
 /* === 剪藏高亮划线与状态表示 === */
 .clippedTextSpan {
-  background: rgba(245, 158, 11, 0.18);
-  border-bottom: 2px dashed var(--primary);
+  background: rgba(245, 158, 11, 0.16);
+  border-bottom: 2px dashed #f59e0b;
   border-radius: 2px;
-  padding: 1px 3px;
+  padding: 0 2px;
   cursor: pointer;
   transition: all 0.2s ease;
+  text-decoration: none;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
 }
 
 .clippedTextSpan:hover {

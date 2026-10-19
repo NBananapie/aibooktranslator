@@ -273,7 +273,8 @@ export default function PdfTranslator() {
 
     if (floatingToolbar.isClipped && floatingToolbar.clipId) {
       await handleDeleteClip(floatingToolbar.clipId);
-      setFloatingToolbar(prev => (prev ? { ...prev, isClipped: false, clipId: undefined } : null));
+      setFloatingToolbar(null);
+      window.getSelection()?.removeAllRanges();
       return;
     }
 
@@ -286,10 +287,11 @@ export default function PdfTranslator() {
       }
     }
 
-    const newClip = await addClip(textToClip, pageNumber, startRect);
-    if (newClip) {
-      setFloatingToolbar(prev => (prev ? { ...prev, isClipped: true, clipId: newClip.id } : null));
-    }
+    // 立即关闭悬浮胶囊浮窗，避免其在页面残留悬停，并清空划选状态
+    setFloatingToolbar(null);
+    window.getSelection()?.removeAllRanges();
+
+    await addClip(textToClip, pageNumber, startRect);
   };
 
   const handleClippedSpanClick = useCallback((e: React.MouseEvent, clip: ClipItem) => {

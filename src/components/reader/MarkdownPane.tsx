@@ -22,6 +22,108 @@ interface BlockContentRendererProps {
   onClippedSpanClick?: (e: React.MouseEvent, clip: ClipItem) => void;
 }
 
+function extractPlainText(node: React.ReactNode): string {
+  if (typeof node === 'string') return node;
+  if (typeof node === 'number') return String(node);
+  if (!node) return '';
+  if (Array.isArray(node)) {
+    return node.map(extractPlainText).join('');
+  }
+  if (React.isValidElement(node) && (node.props as any)?.children) {
+    return extractPlainText((node.props as any).children);
+  }
+  return '';
+}
+
+interface MatchRange {
+  start: number;
+  end: number;
+  clip: ClipItem;
+}
+
+function wrapNodesWithRanges(
+  nodes: React.ReactNode,
+  ranges: MatchRange[],
+  tracker: { offset: number },
+  onClippedSpanClick?: (e: React.MouseEvent, clip: ClipItem) => void,
+  keyPrefix = 'clip-node'
+): React.ReactNode {
+  if (nodes === null || nodes === undefined) return nodes;
+
+  if (typeof nodes === 'string' || typeof nodes === 'number') {
+    const textStr = String(nodes);
+    const nodeStart = tracker.offset;
+    const nodeEnd = nodeStart + textStr.length;
+    tracker.offset = nodeEnd;
+
+    // 寻找与当前文本节点在区间上相交的所有剪藏范围
+    const overlapping = ranges.filter(r => r.start < nodeEnd && r.end > nodeStart);
+    if (overlapping.length === 0) {
+      return textStr;
+    }
+
+    const segments: React.ReactNode[] = [];
+    let localCursor = 0;
+
+    for (const r of overlapping) {
+      const sliceStart = Math.max(0, r.start - nodeStart);
+      const sliceEnd = Math.min(textStr.length, r.end - nodeStart);
+
+      if (sliceStart > localCursor) {
+        segments.push(textStr.slice(localCursor, sliceStart));
+      }
+
+      if (sliceEnd > sliceStart) {
+        const clippedSlice = textStr.slice(sliceStart, sliceEnd);
+        segments.push(
+          <span
+            key={`${keyPrefix}-${r.clip.id}-${nodeStart + sliceStart}`}
+            data-clip-interactive="true"
+            className={styles.clippedTextSpan}
+            onClick={e => {
+              e.stopPropagation();
+              onClippedSpanClick?.(e, r.clip);
+            }}
+            title={`已剪藏（点击唤起微岛）: ${r.clip.text.slice(0, 36)}...`}
+          >
+            {clippedSlice}
+          </span>
+        );
+        localCursor = sliceEnd;
+      }
+    }
+
+    if (localCursor < textStr.length) {
+      segments.push(textStr.slice(localCursor));
+    }
+
+    return segments;
+  }
+
+  if (Array.isArray(nodes)) {
+    return nodes.map((child, idx) =>
+      wrapNodesWithRanges(child, ranges, tracker, onClippedSpanClick, `${keyPrefix}-${idx}`)
+    );
+  }
+
+  if (React.isValidElement(nodes)) {
+    const elementProps = nodes.props as any;
+    if (elementProps?.children) {
+      const newChildren = wrapNodesWithRanges(
+        elementProps.children,
+        ranges,
+        tracker,
+        onClippedSpanClick,
+        `${keyPrefix}-elem`
+      );
+      return React.cloneElement(nodes, { ...elementProps }, newChildren);
+    }
+    return nodes;
+  }
+
+  return nodes;
+}
+
 const BlockContentRenderer = React.memo(
   function BlockContentRenderer({
     blockId,
@@ -29,109 +131,115 @@ const BlockContentRenderer = React.memo(
     currentPageClips,
     onClippedSpanClick,
   }: BlockContentRendererProps) {
-    const relevantClips = useMemo(() => {
-      if (!currentPageClips || currentPageClips.length === 0) return [];
-      return currentPageClips.filter(c => c.text && text.includes(c.text));
-    }, [currentPageClips, text]);
+    const highlightBlockChildren = useCallback(
+      (children: React.ReactNode) => {
+        if (!currentPageClips || currentPageClips.length === 0) return children;
 
-    const formatBlockSegments = useCallback(
-      (rawText: string) => {
-        let segs: React.ReactNode[] = [rawText];
+        const fullText = extractPlainText(children);
+        if (!fullText || !fullText.trim()) return children;
 
-        // 剪藏下划线与交互（点击已剪藏文字唤起微岛）
-        if (relevantClips.length > 0) {
-          for (const clip of relevantClips) {
-            if (!clip.text) continue;
-            const clipText = clip.text;
-            const next: React.ReactNode[] = [];
-            for (const s of segs) {
-              if (typeof s === 'string' && s.includes(clipText)) {
-                const parts = s.split(clipText);
-                for (let i = 0; i < parts.length; i++) {
-                  if (i > 0) {
-                    next.push(
-                      <span
-                        key={`clip-${clip.id}-${i}`}
-                        data-clip-interactive="true"
-                        className={styles.clippedTextSpan}
-                        onClick={e => {
-                          e.stopPropagation();
-                          onClippedSpanClick?.(e, clip);
-                        }}
-                        title="已剪藏（点击唤起微岛）"
-                      >
-                        {clipText}
-                      </span>
-                    );
-                  }
-                  if (parts[i]) next.push(parts[i]);
-                }
-              } else {
-                next.push(s);
+        const ranges: MatchRange[] = [];
+        const fullTrimmed = fullText.trim();
+
+        for (const clip of currentPageClips) {
+          if (!clip.text) continue;
+          const clipRaw = clip.text;
+          const clipTrimmed = clipRaw.trim();
+          if (!clipTrimmed) continue;
+
+          // 1. 直接匹配子串
+          let idx = fullText.indexOf(clipRaw);
+          let matchLen = clipRaw.length;
+          if (idx === -1) {
+            idx = fullText.indexOf(clipTrimmed);
+            matchLen = clipTrimmed.length;
+          }
+
+          // 2. 整段剪藏或大段选区覆盖（解决整段剪藏或含加粗跨节点匹配失灵）
+          if (idx === -1 && fullTrimmed) {
+            if (clipTrimmed === fullTrimmed || clipTrimmed.includes(fullTrimmed)) {
+              const startInFull = fullText.indexOf(fullTrimmed);
+              if (startInFull !== -1) {
+                idx = startInFull;
+                matchLen = fullTrimmed.length;
               }
             }
-            segs = next;
+          }
+
+          // 3. 空白与换行折叠容错匹配
+          if (idx === -1 && fullTrimmed) {
+            const normFull = fullText.replace(/\s+/g, ' ');
+            const normClip = clipTrimmed.replace(/\s+/g, ' ');
+            const normIdx = normFull.indexOf(normClip);
+            if (normIdx !== -1) {
+              let oStart = 0;
+              let nCount = 0;
+              while (oStart < fullText.length && nCount < normIdx) {
+                if (/\s/.test(fullText[oStart])) {
+                  while (oStart + 1 < fullText.length && /\s/.test(fullText[oStart + 1])) oStart++;
+                }
+                nCount++;
+                oStart++;
+              }
+              let oEnd = oStart;
+              let nLen = 0;
+              while (oEnd < fullText.length && nLen < normClip.length) {
+                if (/\s/.test(fullText[oEnd])) {
+                  while (oEnd + 1 < fullText.length && /\s/.test(fullText[oEnd + 1])) oEnd++;
+                }
+                nLen++;
+                oEnd++;
+              }
+              ranges.push({ start: oStart, end: oEnd, clip });
+              continue;
+            }
+          }
+
+          if (idx !== -1) {
+            ranges.push({
+              start: idx,
+              end: idx + matchLen,
+              clip,
+            });
           }
         }
 
-        return segs;
+        if (ranges.length === 0) return children;
+
+        // 按起始位置升序排序
+        ranges.sort((a, b) => a.start - b.start);
+
+        const tracker = { offset: 0 };
+        return wrapNodesWithRanges(children, ranges, tracker, onClippedSpanClick);
       },
-      [blockId, relevantClips, onClippedSpanClick]
+      [currentPageClips, onClippedSpanClick]
     );
 
     const customComponents = useMemo(
       () => ({
         p: ({ node, children, ...props }: any) => (
-          <p {...props}>
-            {React.Children.map(children, child =>
-              typeof child === 'string' ? formatBlockSegments(child) : child
-            )}
-          </p>
+          <p {...props}>{highlightBlockChildren(children)}</p>
         ),
         h1: ({ node, children, ...props }: any) => (
-          <h1 {...props}>
-            {React.Children.map(children, child =>
-              typeof child === 'string' ? formatBlockSegments(child) : child
-            )}
-          </h1>
+          <h1 {...props}>{highlightBlockChildren(children)}</h1>
         ),
         h2: ({ node, children, ...props }: any) => (
-          <h2 {...props}>
-            {React.Children.map(children, child =>
-              typeof child === 'string' ? formatBlockSegments(child) : child
-            )}
-          </h2>
+          <h2 {...props}>{highlightBlockChildren(children)}</h2>
         ),
         h3: ({ node, children, ...props }: any) => (
-          <h3 {...props}>
-            {React.Children.map(children, child =>
-              typeof child === 'string' ? formatBlockSegments(child) : child
-            )}
-          </h3>
+          <h3 {...props}>{highlightBlockChildren(children)}</h3>
+        ),
+        h4: ({ node, children, ...props }: any) => (
+          <h4 {...props}>{highlightBlockChildren(children)}</h4>
         ),
         li: ({ node, children, ...props }: any) => (
-          <li {...props}>
-            {React.Children.map(children, child =>
-              typeof child === 'string' ? formatBlockSegments(child) : child
-            )}
-          </li>
+          <li {...props}>{highlightBlockChildren(children)}</li>
         ),
-        strong: ({ node, children, ...props }: any) => (
-          <strong {...props}>
-            {React.Children.map(children, child =>
-              typeof child === 'string' ? formatBlockSegments(child) : child
-            )}
-          </strong>
-        ),
-        em: ({ node, children, ...props }: any) => (
-          <em {...props}>
-            {React.Children.map(children, child =>
-              typeof child === 'string' ? formatBlockSegments(child) : child
-            )}
-          </em>
+        blockquote: ({ node, children, ...props }: any) => (
+          <blockquote {...props}>{highlightBlockChildren(children)}</blockquote>
         ),
       }),
-      [formatBlockSegments]
+      [highlightBlockChildren]
     );
 
     return (
@@ -141,7 +249,9 @@ const BlockContentRenderer = React.memo(
     );
   },
   (prevProps, nextProps) => {
-    return prevProps.text === nextProps.text && prevProps.currentPageClips === nextProps.currentPageClips;
+    if (prevProps.text !== nextProps.text) return false;
+    if (prevProps.currentPageClips.length !== nextProps.currentPageClips.length) return false;
+    return prevProps.currentPageClips.every((c, i) => c.id === nextProps.currentPageClips[i]?.id);
   }
 );
 

@@ -33,9 +33,12 @@ export function ReaderOverlays({
       )}
 
       {ghostFlyStyle && (
-        <div className={styles.ghostFlyingItem} style={ghostFlyStyle}>
-          <BookmarkPlus size={14} style={{ display: 'inline', marginRight: '4px' }} />
-          {ghostFlyText}
+        <div className={styles.ghostFlyingContainer} style={ghostFlyStyle}>
+          <div className={styles.ghostFlyingTrail} />
+          <div className={styles.ghostFlyingCard}>
+            <BookmarkPlus size={15} className={styles.ghostFlyIcon} />
+            <span className={styles.ghostFlyLabel}>{ghostFlyText}</span>
+          </div>
         </div>
       )}
 
