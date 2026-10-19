@@ -2,12 +2,12 @@
 
 import React from 'react';
 import styles from '@/app/page.module.css';
-import { BookmarkPlus } from 'lucide-react';
+import { ClipFlightCanvas, FlightPayload } from './ClipFlightCanvas';
 
 export interface ReaderOverlaysProps {
   isLoadingFile: boolean;
-  ghostFlyStyle: React.CSSProperties | null;
-  ghostFlyText: string;
+  flightPayload: FlightPayload | null;
+  onFlightComplete: () => void;
   isImmersive: boolean;
   pageNumber: number;
   numPages: number;
@@ -15,8 +15,8 @@ export interface ReaderOverlaysProps {
 
 export function ReaderOverlays({
   isLoadingFile,
-  ghostFlyStyle,
-  ghostFlyText,
+  flightPayload,
+  onFlightComplete,
   isImmersive,
   pageNumber,
   numPages,
@@ -32,15 +32,10 @@ export function ReaderOverlays({
         </div>
       )}
 
-      {ghostFlyStyle && (
-        <div className={styles.ghostFlyingContainer} style={ghostFlyStyle}>
-          <div className={styles.ghostFlyingTrail} />
-          <div className={styles.ghostFlyingCard}>
-            <BookmarkPlus size={15} className={styles.ghostFlyIcon} />
-            <span className={styles.ghostFlyLabel}>{ghostFlyText}</span>
-          </div>
-        </div>
-      )}
+      <ClipFlightCanvas
+        flightPayload={flightPayload}
+        onFlightComplete={onFlightComplete}
+      />
 
       {isImmersive && (
         <div className={styles.immersiveHint}>

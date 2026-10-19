@@ -220,8 +220,8 @@ export default function PdfTranslator() {
     setIsClipsDrawerOpen,
     toggleClipsDrawer,
     toggleBtnRef,
-    ghostFlyStyle,
-    ghostFlyText,
+    flightPayload,
+    handleFlightComplete,
     addClip,
     deleteClip: handleDeleteClip,
     copyClip: handleCopyClip,
@@ -354,8 +354,8 @@ export default function PdfTranslator() {
 
       <ReaderOverlays
         isLoadingFile={!file}
-        ghostFlyStyle={ghostFlyStyle}
-        ghostFlyText={ghostFlyText}
+        flightPayload={flightPayload}
+        onFlightComplete={handleFlightComplete}
         isImmersive={isImmersive}
         pageNumber={pageNumber}
         numPages={numPages}

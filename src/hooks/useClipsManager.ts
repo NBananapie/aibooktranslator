@@ -1,10 +1,11 @@
 "use client";
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback, startTransition } from 'react';
 import { ClipItem, addHistoryClip, deleteHistoryClip } from '@/lib/db';
 import { exportClipsAsMarkdown, formatClipsForClipboard } from '@/services/exportService';
 import { isValidClippedText } from './useTextSelection';
 import styles from '@/app/page.module.css';
+import { FlightPayload } from '@/components/reader/ClipFlightCanvas';
 
 export interface UseClipsManagerOptions {
   activeFileId: string | null;
@@ -35,9 +36,23 @@ export function useClipsManager(options: UseClipsManagerOptions) {
   const [isClipsDrawerOpen, setIsClipsDrawerOpen] = useState<boolean>(false);
   const toggleBtnRef = useRef<HTMLButtonElement>(null);
 
-  // 飞行微动效状态
-  const [ghostFlyStyle, setGhostFlyStyle] = useState<React.CSSProperties | null>(null);
-  const [ghostFlyText, setGhostFlyText] = useState<string>('');
+  // 120FPS 独立物理 Canvas 飞行载荷状态
+  const [flightPayload, setFlightPayload] = useState<FlightPayload | null>(null);
+
+  const handleFlightComplete = useCallback(() => {
+    setFlightPayload(null);
+
+    // 落地吸收瞬间，触发侧边栏小把手的物理吸入共振冲击波
+    const btn = toggleBtnRef.current;
+    if (btn) {
+      btn.classList.remove(styles.toggleBtnAbsorbPulse);
+      void btn.offsetWidth;
+      btn.classList.add(styles.toggleBtnAbsorbPulse);
+      setTimeout(() => {
+        btn.classList.remove(styles.toggleBtnAbsorbPulse);
+      }, 550);
+    }
+  }, []);
 
   // 1. 触发飞行微动效并持久化剪藏
   const addClip = async (
@@ -51,12 +66,12 @@ export function useClipsManager(options: UseClipsManagerOptions) {
     const startRect = startBoundingRect || {
       top: window.innerHeight / 2,
       left: window.innerWidth / 2,
-      width: 120,
-      height: 30,
+      width: 140,
+      height: 32,
     };
 
-    const startW = Math.min(240, Math.max(100, startRect.width || 120));
-    const startH = startRect.height || 30;
+    const startX = startRect.left + (startRect.width || 120) / 2;
+    const startY = startRect.top + (startRect.height || 32) / 2;
 
     // 动态计算目标中心点坐标（侧边栏打开时飞入抽屉顶部列表，收起时飞入折叠小把手）
     let targetX: number;
@@ -76,33 +91,14 @@ export function useClipsManager(options: UseClipsManagerOptions) {
       }
     }
 
-    const deltaX = targetX - (startRect.left + startW / 2);
-    const deltaY = targetY - (startRect.top + startH / 2);
-
-    setGhostFlyText(textToClip.slice(0, 26) + (textToClip.length > 26 ? '...' : ''));
-    setGhostFlyStyle({
-      top: `${startRect.top}px`,
-      left: `${startRect.left}px`,
-      width: `${startW}px`,
-      ['--delta-x' as any]: `${deltaX}px`,
-      ['--delta-y' as any]: `${deltaY}px`,
+    // 立即启动 120FPS 独立物理 Canvas 贝塞尔吸入特效
+    setFlightPayload({
+      startX,
+      startY,
+      targetX,
+      targetY,
+      text: textToClip,
     });
-
-    setTimeout(() => {
-      setGhostFlyStyle(null);
-      setGhostFlyText('');
-
-      // 落地吸收瞬间，触发侧边栏小把手的物理吸入共振冲击波
-      const btn = toggleBtnRef.current;
-      if (btn) {
-        btn.classList.remove(styles.toggleBtnAbsorbPulse);
-        void btn.offsetWidth; // 触发 reflow 重新触发关键帧
-        btn.classList.add(styles.toggleBtnAbsorbPulse);
-        setTimeout(() => {
-          btn.classList.remove(styles.toggleBtnAbsorbPulse);
-        }, 550);
-      }
-    }, 650);
 
     const newClip: ClipItem = {
       id: crypto.randomUUID(),
@@ -114,8 +110,13 @@ export function useClipsManager(options: UseClipsManagerOptions) {
 
     await addHistoryClip(activeFileId, newClip);
     const nextClips = [newClip, ...clips.filter(c => c.id !== newClip.id)];
-    setClips(nextClips);
-    onClipsChange?.(nextClips);
+
+    // 使用 startTransition 降低大树重新渲染优先级，避免主线程渲染阻塞导致动画掉帧
+    startTransition(() => {
+      setClips(nextClips);
+      onClipsChange?.(nextClips);
+    });
+
     return newClip;
   };
 
@@ -124,8 +125,10 @@ export function useClipsManager(options: UseClipsManagerOptions) {
     if (!activeFileId) return;
     await deleteHistoryClip(activeFileId, clipId);
     const nextClips = clips.filter(c => c.id !== clipId);
-    setClips(nextClips);
-    onClipsChange?.(nextClips);
+    startTransition(() => {
+      setClips(nextClips);
+      onClipsChange?.(nextClips);
+    });
   };
 
   // 3. 复制单条剪藏
@@ -160,8 +163,8 @@ export function useClipsManager(options: UseClipsManagerOptions) {
     setIsClipsDrawerOpen,
     toggleClipsDrawer,
     toggleBtnRef,
-    ghostFlyStyle,
-    ghostFlyText,
+    flightPayload,
+    handleFlightComplete,
     addClip,
     deleteClip,
     copyClip,
