@@ -2,6 +2,11 @@ import { NextRequest, NextResponse } from 'next/server';
 
 export const runtime = 'edge';
 
+// 单次请求最大允许体积：5MB
+const MAX_PAYLOAD_SIZE = 5 * 1024 * 1024;
+// SHA-256 64位十六进制哈希正则
+const HASH_REGEX = /^[a-f0-9]{64}$/i;
+
 function getD1Database(): any {
   if (typeof process !== 'undefined' && (process.env as any).DB) {
     return (process.env as any).DB;
@@ -12,14 +17,54 @@ function getD1Database(): any {
   return null;
 }
 
+/**
+ * 安全提取同步口令
+ * 方案 2：优先从 Authorization: Bearer <key> 请求头获取，避免 URL 查询参数在日志中泄露
+ */
+function getAuthorizedSyncKey(req: NextRequest, body?: any): string | null {
+  const authHeader = req.headers.get('authorization') || req.headers.get('Authorization');
+  if (authHeader && authHeader.toLowerCase().startsWith('bearer ')) {
+    return authHeader.substring(7).trim();
+  }
+  const { searchParams } = new URL(req.url);
+  const queryKey = searchParams.get('key')?.trim();
+  if (queryKey) return queryKey;
+  if (body && typeof body.syncKey === 'string' && body.syncKey.trim()) {
+    return body.syncKey.trim();
+  }
+  return null;
+}
+
+/**
+ * 方案 1：强制高熵口令校验（阻断弱口令爆破）
+ */
+function validateSyncKey(syncKey: string | null): { valid: boolean; error?: string } {
+  if (!syncKey) {
+    return { valid: false, error: '未提供同步口令凭证 (请在 Authorization 请求头中传入 Bearer 口令)' };
+  }
+  if (syncKey.length < 16) {
+    return { valid: false, error: '口令强度不足：同步口令至少需 16 位高熵字符以防暴力破解' };
+  }
+  if (syncKey.length > 128) {
+    return { valid: false, error: '口令长度超限 (最多 128 位字符)' };
+  }
+  return { valid: true };
+}
+
 // GET: 获取指定书籍的云端数据，或者获取口令下的所有书籍列表
 export async function GET(req: NextRequest) {
+  const syncKey = getAuthorizedSyncKey(req);
+  const keyCheck = validateSyncKey(syncKey);
+  if (!keyCheck.valid) {
+    return NextResponse.json({ success: false, error: keyCheck.error }, { status: 400 });
+  }
+
   const { searchParams } = new URL(req.url);
-  const syncKey = searchParams.get('key')?.trim();
   const bookFingerprint = searchParams.get('hash')?.trim();
 
-  if (!syncKey) {
-    return NextResponse.json({ success: false, error: '缺少同步口令 (syncKey)' }, { status: 400 });
+  // 方案 3：校验指纹合法性
+  if (bookFingerprint && !HASH_REGEX.test(bookFingerprint)) {
+    return NextResponse.json({ success: false, error: '非法书籍指纹格式（需为 64 位 SHA-256 哈希值）' }, { status: 400 });
   }
 
   const db = getD1Database();
@@ -31,7 +76,7 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    // 1. 如果传了书籍指纹，获取单本书籍的所有翻译与剪藏数据
+    // 1. 如果传了书籍指纹，获取单本书籍的所有翻译与剪藏数据 (支持 E2EE 密文透传)
     if (bookFingerprint) {
       const stmt = db.prepare(
         `SELECT sync_key, book_fingerprint, filename, total_pages, last_read_page, last_read_time, translations, clips, updated_at 
@@ -44,17 +89,19 @@ export async function GET(req: NextRequest) {
         return NextResponse.json({ success: true, record: null });
       }
 
-      let parsedTranslations = {};
-      let parsedClips = [];
-      try {
-        if (row.translations) parsedTranslations = JSON.parse(row.translations);
-      } catch (e) {
-        console.error('Failed to parse translations JSON', e);
+      // 如果存储的是 E2EE 密文字符串 (e2ee:v1:...)，直接透传由客户端在本地解密；若为明文则尝试解析 JSON
+      let translationsData: any = row.translations || '{}';
+      if (typeof row.translations === 'string' && !row.translations.startsWith('e2ee:v1:')) {
+        try {
+          translationsData = JSON.parse(row.translations);
+        } catch {}
       }
-      try {
-        if (row.clips) parsedClips = JSON.parse(row.clips);
-      } catch (e) {
-        console.error('Failed to parse clips JSON', e);
+
+      let clipsData: any = row.clips || '[]';
+      if (typeof row.clips === 'string' && !row.clips.startsWith('e2ee:v1:')) {
+        try {
+          clipsData = JSON.parse(row.clips);
+        } catch {}
       }
 
       return NextResponse.json({
@@ -65,8 +112,8 @@ export async function GET(req: NextRequest) {
           totalPages: row.total_pages,
           lastReadPage: row.last_read_page,
           lastReadTime: row.last_read_time,
-          translations: parsedTranslations,
-          clips: parsedClips,
+          translations: translationsData,
+          clips: clipsData,
           updatedAt: row.updated_at,
         },
       });
@@ -95,67 +142,118 @@ export async function GET(req: NextRequest) {
 
 // POST: 增量或全量保存书籍的翻译与剪藏数据
 export async function POST(req: NextRequest) {
+  // 方案 3：输入报文体积截断与防御
+  const contentLength = req.headers.get('content-length');
+  if (contentLength && parseInt(contentLength, 10) > MAX_PAYLOAD_SIZE) {
+    return NextResponse.json(
+      { success: false, error: '请求体积超限：单次同步数据包不能超过 5MB' },
+      { status: 413 }
+    );
+  }
+
+  let body: any;
   try {
-    const body = await req.json();
-    const {
-      syncKey,
-      bookFingerprint,
-      filename,
-      totalPages = 0,
-      lastReadPage = 1,
-      lastReadTime = Date.now(),
-      translations = {},
-      clips = [],
-      isPartial = false,
-    } = body;
-
-    if (!syncKey || !bookFingerprint) {
+    const rawText = await req.text();
+    if (rawText.length > MAX_PAYLOAD_SIZE) {
       return NextResponse.json(
-        { success: false, error: '缺少关键参数: syncKey 与 bookFingerprint 为必填项' },
-        { status: 400 }
+        { success: false, error: '请求体积超限：单次同步数据包不能超过 5MB' },
+        { status: 413 }
       );
     }
+    body = JSON.parse(rawText);
+  } catch (e) {
+    return NextResponse.json({ success: false, error: '非法 JSON 数据格式' }, { status: 400 });
+  }
 
-    const db = getD1Database();
-    if (!db) {
-      return NextResponse.json(
-        { success: false, error: 'Cloudflare D1 数据库绑定未就绪，请在 Cloudflare Pages 线上环境中使用。' },
-        { status: 503 }
-      );
-    }
+  // 方案 2：优先从 Header 提取口令
+  const syncKey = getAuthorizedSyncKey(req, body);
+  const keyCheck = validateSyncKey(syncKey);
+  if (!keyCheck.valid) {
+    return NextResponse.json({ success: false, error: keyCheck.error }, { status: 400 });
+  }
 
-    const now = Date.now();
+  const {
+    bookFingerprint,
+    filename = '未命名文档.pdf',
+    totalPages = 0,
+    lastReadPage = 1,
+    lastReadTime = Date.now(),
+    translations = {},
+    clips = [],
+    isPartial = false,
+  } = body;
 
-    // 如果是局部增量更新（例如单页翻译或新增一条剪藏）
+  // 方案 3：字段清洗与合法性校验
+  if (!bookFingerprint || !HASH_REGEX.test(bookFingerprint)) {
+    return NextResponse.json(
+      { success: false, error: '缺少或非法的书籍指纹 (需为 64 位 SHA-256 哈希值)' },
+      { status: 400 }
+    );
+  }
+
+  // 元数据安全截断
+  const safeFilename = String(filename).slice(0, 255);
+  const safeTotalPages = Math.max(0, Math.min(100000, Number(totalPages) || 0));
+  const safeLastReadPage = Math.max(1, Math.min(100000, Number(lastReadPage) || 1));
+  const safeLastReadTime = typeof lastReadTime === 'number' && lastReadTime > 0 ? lastReadTime : Date.now();
+
+  const db = getD1Database();
+  if (!db) {
+    return NextResponse.json(
+      { success: false, error: 'Cloudflare D1 数据库绑定未就绪，请在 Cloudflare Pages 线上环境中使用。' },
+      { status: 503 }
+    );
+  }
+
+  const now = Date.now();
+
+  // 方案 5 存储适配：如果是 E2EE 密文字符串直接存，如果是未加密对象则序列化
+  const serializedTranslations =
+    typeof translations === 'string' ? translations : JSON.stringify(translations || {});
+  const serializedClips = typeof clips === 'string' ? clips : JSON.stringify(clips || []);
+
+  try {
+    // 局部增量更新逻辑
     if (isPartial) {
       const selectStmt = db.prepare(
         `SELECT translations, clips, filename, total_pages FROM book_sync_records WHERE sync_key = ? AND book_fingerprint = ?`
       );
       const existing = await selectStmt.bind(syncKey, bookFingerprint).first();
 
-      let mergedTranslations: Record<string, string> = {};
-      let mergedClips: any[] = [];
+      let finalTranslations = serializedTranslations;
+      let finalClips = serializedClips;
 
-      if (existing) {
+      // 如果两端都是明文且不是 E2EE 密文，执行服务端合并；若为 E2EE 密文，直接采用最新客户端传入的密文
+      if (
+        existing &&
+        typeof existing.translations === 'string' &&
+        !existing.translations.startsWith('e2ee:v1:') &&
+        !serializedTranslations.startsWith('e2ee:v1:')
+      ) {
         try {
-          if (existing.translations) mergedTranslations = JSON.parse(existing.translations);
-        } catch (e) {}
-        try {
-          if (existing.clips) mergedClips = JSON.parse(existing.clips);
-        } catch (e) {}
+          const mergedTrans = JSON.parse(existing.translations);
+          if (translations && typeof translations === 'object') {
+            Object.assign(mergedTrans, translations);
+            finalTranslations = JSON.stringify(mergedTrans);
+          }
+        } catch {}
       }
 
-      // 合并传入的 translations (单页或多页覆盖)
-      if (translations && typeof translations === 'object') {
-        Object.assign(mergedTranslations, translations);
-      }
-
-      // 合并传入的 clips (去重覆盖)
-      if (Array.isArray(clips) && clips.length > 0) {
-        const clipMap = new Map();
-        mergedClips.forEach(c => clipMap.set(c.id, c));
-        clips.forEach(c => clipMap.set(c.id, c));
-        mergedClips = Array.from(clipMap.values());
+      if (
+        existing &&
+        typeof existing.clips === 'string' &&
+        !existing.clips.startsWith('e2ee:v1:') &&
+        !serializedClips.startsWith('e2ee:v1:')
+      ) {
+        try {
+          const mergedClips = JSON.parse(existing.clips);
+          if (Array.isArray(clips) && clips.length > 0) {
+            const clipMap = new Map();
+            mergedClips.forEach((c: any) => clipMap.set(c.id, c));
+            clips.forEach((c: any) => clipMap.set(c.id, c));
+            finalClips = JSON.stringify(Array.from(clipMap.values()));
+          }
+        } catch {}
       }
 
       const upsertStmt = db.prepare(
@@ -176,12 +274,12 @@ export async function POST(req: NextRequest) {
         .bind(
           syncKey,
           bookFingerprint,
-          filename || existing?.filename || '未命名文档.pdf',
-          totalPages || existing?.total_pages || 0,
-          lastReadPage,
-          lastReadTime,
-          JSON.stringify(mergedTranslations),
-          JSON.stringify(mergedClips),
+          safeFilename || existing?.filename || '未命名文档.pdf',
+          safeTotalPages || existing?.total_pages || 0,
+          safeLastReadPage,
+          safeLastReadTime,
+          finalTranslations,
+          finalClips,
           now
         )
         .run();
@@ -208,12 +306,12 @@ export async function POST(req: NextRequest) {
       .bind(
         syncKey,
         bookFingerprint,
-        filename || '未命名文档.pdf',
-        totalPages,
-        lastReadPage,
-        lastReadTime,
-        JSON.stringify(translations || {}),
-        JSON.stringify(clips || []),
+        safeFilename,
+        safeTotalPages,
+        safeLastReadPage,
+        safeLastReadTime,
+        serializedTranslations,
+        serializedClips,
         now
       )
       .run();
@@ -227,12 +325,17 @@ export async function POST(req: NextRequest) {
 
 // DELETE: 删除指定书籍的云端数据
 export async function DELETE(req: NextRequest) {
+  const syncKey = getAuthorizedSyncKey(req);
+  const keyCheck = validateSyncKey(syncKey);
+  if (!keyCheck.valid) {
+    return NextResponse.json({ success: false, error: keyCheck.error }, { status: 400 });
+  }
+
   const { searchParams } = new URL(req.url);
-  const syncKey = searchParams.get('key')?.trim();
   const bookFingerprint = searchParams.get('hash')?.trim();
 
-  if (!syncKey || !bookFingerprint) {
-    return NextResponse.json({ success: false, error: '缺少 syncKey 或 bookFingerprint' }, { status: 400 });
+  if (!bookFingerprint || !HASH_REGEX.test(bookFingerprint)) {
+    return NextResponse.json({ success: false, error: '缺少或非法的书籍指纹 (需为 64 位 SHA-256 哈希值)' }, { status: 400 });
   }
 
   const db = getD1Database();

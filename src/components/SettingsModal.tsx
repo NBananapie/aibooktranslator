@@ -16,6 +16,7 @@ import {
   Check,
 } from 'lucide-react';
 import { testCloudSyncConnection } from '@/services/cloudSyncService';
+import { isStrongSyncKey, generateStrongSyncKey } from '@/lib/crypto';
 
 const PROVIDER_PRESETS: { label: string; baseUrl: string; model: string; provider: 'openai' | 'gemini' | 'custom' }[] = [
   { label: 'Agnes (3.0 Flash 默认)', baseUrl: 'https://apihub.agnes-ai.com/v1', model: 'agnes-3.0-flash', provider: 'openai' },
@@ -52,15 +53,9 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   }, [isOpen, settings]);
 
   const generateRandomSyncKey = () => {
-    const chars = 'abcdefghjkmnpqrstuvwxyz23456789';
-    let key = 'sync-';
-    for (let i = 0; i < 3; i++) {
-      for (let j = 0; j < 4; j++) {
-        key += chars[Math.floor(Math.random() * chars.length)];
-      }
-      if (i < 2) key += '-';
-    }
+    const key = generateStrongSyncKey();
     setFormSettings(prev => ({ ...prev, syncKey: key }));
+    setSyncTestStatus({ testing: false });
   };
 
   const handleTestSync = async () => {
@@ -68,13 +63,21 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
       setSyncTestStatus({ testing: false, success: false, message: '请先输入或生成同步口令' });
       return;
     }
-    setSyncTestStatus({ testing: true, message: '正在测试与 Cloudflare D1 的连接...' });
+    if (!isStrongSyncKey(formSettings.syncKey)) {
+      setSyncTestStatus({
+        testing: false,
+        success: false,
+        message: '口令长度不足：需至少 16 位高熵字符以保证端到端加密安全与防爆破',
+      });
+      return;
+    }
+    setSyncTestStatus({ testing: true, message: '正在测试与 Cloudflare D1 的安全连接...' });
     const result = await testCloudSyncConnection(formSettings.syncKey);
     if (result.success) {
       setSyncTestStatus({
         testing: false,
         success: true,
-        message: `连接成功！云端已有此口令下的 ${result.count} 本书籍同步记录。`,
+        message: `连接成功！云端已有此口令下的 ${result.count} 本书籍同步记录（已启用 AES-GCM 端到端加密）。`,
       });
     } else {
       setSyncTestStatus({
@@ -133,6 +136,16 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   };
 
   const saveSettings = () => {
+    if (formSettings.syncKey && formSettings.syncKey.trim()) {
+      if (!isStrongSyncKey(formSettings.syncKey)) {
+        setSyncTestStatus({
+          testing: false,
+          success: false,
+          message: '保存失败：口令长度不足 16 位，请使用更长的高熵口令或点击“随机生成新口令”',
+        });
+        return;
+      }
+    }
     const currentPKey = getPresetKey(formSettings);
     const finalSettings: AppSettings = {
       ...formSettings,
@@ -387,7 +400,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
               type="text"
               value={formSettings.syncKey || ''}
               onChange={e => setFormSettings({ ...formSettings, syncKey: e.target.value })}
-              placeholder="输入或生成同步口令 (例如: sync-a8f2-9c1e)"
+              placeholder="输入或生成同步口令 (至少 16 位，推荐随机生成)"
               style={{ flex: 1 }}
             />
             <button
@@ -401,6 +414,16 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
               {syncTestStatus.testing ? '检测中' : '测试连接'}
             </button>
           </div>
+          {formSettings.syncKey && formSettings.syncKey.trim().length > 0 && formSettings.syncKey.trim().length < 16 && (
+            <p style={{ fontSize: '11.5px', marginTop: '4px', color: 'var(--accent-rose)', display: 'flex', alignItems: 'center', gap: '4px' }}>
+              口令过短（当前 {formSettings.syncKey.trim().length} 位，需至少 16 位高熵字符以防暴力破解并启用端到端加密）
+            </p>
+          )}
+          {formSettings.syncKey && formSettings.syncKey.trim().length >= 16 && (
+            <p style={{ fontSize: '11.5px', marginTop: '4px', color: '#10b981', display: 'flex', alignItems: 'center', gap: '4px' }}>
+              <Check size={11} /> 口令强度达标，已启用客户端 AES-GCM 256 位端到端加密 (E2EE)
+            </p>
+          )}
           {syncTestStatus.message && (
             <p style={{
               fontSize: '12px',
@@ -415,7 +438,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             </p>
           )}
           <p style={hintStyle}>
-            无需上传大体积 PDF。在不同设备输入相同口令并打开本地 PDF，系统将通过内容哈希自动拉取所有翻译与剪藏。
+            无需上传大体积 PDF。在不同设备输入相同口令并打开本地 PDF，系统将通过内容哈希自动拉取所有翻译与剪藏。所有数据均在本地经由口令端到端加密后再上传。
           </p>
         </div>
 
