@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { ClipItem, addHistoryClip, deleteHistoryClip } from '@/lib/db';
 import { exportClipsAsMarkdown, formatClipsForClipboard } from '@/services/exportService';
 import { isValidClippedText } from './useTextSelection';
@@ -9,15 +9,28 @@ export interface UseClipsManagerOptions {
   activeFileId: string | null;
   initialClips?: ClipItem[];
   file?: File | null;
+  onClipsChange?: (clips: ClipItem[]) => void;
 }
 
 export function useClipsManager(options: UseClipsManagerOptions) {
-  const { activeFileId, initialClips = [], file } = options;
+  const { activeFileId, initialClips, file, onClipsChange } = options;
 
   // 自动过滤历史中的纯标点脏数据
   const [clips, setClips] = useState<ClipItem[]>(() =>
-    initialClips.filter(c => isValidClippedText(c.text))
+    (initialClips || []).filter(c => isValidClippedText(c.text))
   );
+
+  // 监听 initialClips（异步从 IndexedDB 或云端加载后响应式更新）
+  useEffect(() => {
+    if (initialClips === undefined) return;
+    const valid = initialClips.filter(c => isValidClippedText(c.text));
+    setClips(prev => {
+      if (prev.length === valid.length && prev.every((item, i) => item.id === valid[i]?.id)) {
+        return prev;
+      }
+      return valid;
+    });
+  }, [initialClips]);
   const [isClipsDrawerOpen, setIsClipsDrawerOpen] = useState<boolean>(false);
   const toggleBtnRef = useRef<HTMLButtonElement>(null);
 
@@ -100,7 +113,9 @@ export function useClipsManager(options: UseClipsManagerOptions) {
     };
 
     await addHistoryClip(activeFileId, newClip);
-    setClips(prev => [newClip, ...prev.filter(c => c.id !== newClip.id)]);
+    const nextClips = [newClip, ...clips.filter(c => c.id !== newClip.id)];
+    setClips(nextClips);
+    onClipsChange?.(nextClips);
     return newClip;
   };
 
@@ -108,7 +123,9 @@ export function useClipsManager(options: UseClipsManagerOptions) {
   const deleteClip = async (clipId: string) => {
     if (!activeFileId) return;
     await deleteHistoryClip(activeFileId, clipId);
-    setClips(prev => prev.filter(c => c.id !== clipId));
+    const nextClips = clips.filter(c => c.id !== clipId);
+    setClips(nextClips);
+    onClipsChange?.(nextClips);
   };
 
   // 3. 复制单条剪藏

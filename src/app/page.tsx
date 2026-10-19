@@ -351,6 +351,11 @@ export default function Home() {
                               读至第 {item.lastReadPage} 页
                             </span>
                           )}
+                          {item.clips && item.clips.length > 0 && (
+                            <span className={styles.badgeSubtle}>
+                              剪藏 {item.clips.length} 条
+                            </span>
+                          )}
                         </div>
 
                         <div className={styles.lastReadTimeRow} data-tooltip={`上次阅读时间: ${new Date(item.lastReadTime || item.date).toLocaleString()}`}>

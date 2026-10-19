@@ -8,7 +8,7 @@ import { useRouter } from 'next/navigation';
 import { ClipItem } from '@/lib/db';
 import { exportTranslationsAsMarkdown } from '@/services/exportService';
 import { capturePageCanvasAsBase64, requestPaddleOcr } from '@/services/ocrService';
-import { fetchBookFromCloud, mergeCloudDataIntoLocal } from '@/services/cloudSyncService';
+import { fetchBookFromCloud, mergeCloudDataIntoLocal, pushBookToCloud } from '@/services/cloudSyncService';
 import { usePdfDocument } from '@/hooks/usePdfDocument';
 import { useTranslator } from '@/hooks/useTranslator';
 import { useBilingualSync } from '@/hooks/useBilingualSync';
@@ -196,6 +196,24 @@ export default function PdfTranslator() {
   });
 
   // 5. 知识剪藏库管理
+  const handleClipsChange = useCallback(
+    (nextClips: ClipItem[]) => {
+      // 1. 同步更新 dbRecord 内存状态，防止后续被旧缓存覆写
+      setDbRecord(prev => (prev ? { ...prev, clips: nextClips } : prev));
+
+      // 2. 自动增量静默同步至 Cloudflare D1
+      if (settings?.syncKey?.trim() && settings?.autoCloudSync !== false && dbRecord?.fingerprint) {
+        pushBookToCloud(
+          { ...dbRecord, clips: nextClips },
+          settings.syncKey!,
+          true,
+          { clips: nextClips }
+        ).catch(err => console.error('Auto cloud sync clips error', err));
+      }
+    },
+    [dbRecord, settings.syncKey, settings.autoCloudSync, setDbRecord]
+  );
+
   const {
     clips,
     isClipsDrawerOpen,
@@ -212,6 +230,8 @@ export default function PdfTranslator() {
   } = useClipsManager({
     activeFileId,
     file,
+    initialClips: dbRecord?.clips,
+    onClipsChange: handleClipsChange,
   });
 
   // 6. 划词选区与伴读学者
