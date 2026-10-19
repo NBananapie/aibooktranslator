@@ -194,44 +194,44 @@ export default function Home() {
   return (
     <div className={styles.homeContainer}>
       <header className={styles.homeHeader}>
-        <div className={styles.brand} style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+        <div className={styles.brand} style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
           <h1>AI PDF Translator</h1>
-          {settings.syncKey?.trim() ? (
+          {settings.syncKey?.trim() && (
             <span
               className={styles.badge}
               style={{ fontSize: '11px', display: 'inline-flex', alignItems: 'center', gap: '4px', cursor: 'pointer' }}
-              onClick={() => setIsSettingsOpen(true)}
-              data-tooltip={`已连接 Cloudflare D1 云端同步 (口令: ${settings.syncKey})`}
+              onClick={() => router.push('/sync')}
+              data-tooltip={`已连接 Cloudflare D1 云端同步，点击管理`}
             >
-              <Cloud size={12} /> 云端已同步
+              <Cloud size={12} /> 云端已连接
             </span>
-          ) : (
-            <button
-              type="button"
-              className={styles.badgeSubtle}
-              style={{ fontSize: '11px', cursor: 'pointer', background: 'none', border: '1px solid var(--glass-border)' }}
-              onClick={() => setIsSettingsOpen(true)}
-              data-tooltip="点击配置多端同步口令"
-            >
-              配置云端同步
-            </button>
           )}
         </div>
-        <div className={styles.controls}>
+        <div className={styles.controls} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <button 
             type="button" 
-            className={styles.themeToggleBtn} 
+            className={styles.headerBtn} 
+            onClick={() => router.push('/sync')}
+            data-tooltip={settings.syncKey ? `已配置口令，点击管理云端书架` : '配置 Cloudflare D1 多端同步口令'}
+          >
+            <Cloud size={15} style={{ color: settings.syncKey ? '#10b981' : 'inherit' }} />
+            <span>云端同步</span>
+            {settings.syncKey && <span className={styles.onlineDot} />}
+          </button>
+          <button 
+            type="button" 
+            className={styles.headerBtn} 
             onClick={toggleTheme}
             data-tooltip="切换深色/浅色模式"
-            style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
           >
             {theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
             <span>{theme === 'dark' ? '浅色模式' : '深色模式'}</span>
           </button>
           <button 
-            className={styles.btn} 
+            type="button"
+            className={`${styles.headerBtn} ${styles.headerBtnPrimary}`} 
             onClick={() => setIsSettingsOpen(true)}
-            style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+            data-tooltip="AI 大模型与 PaddleOCR 配置"
           >
             <SettingsIcon size={15} />
             <span>引擎设置</span>

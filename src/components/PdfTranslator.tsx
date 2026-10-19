@@ -20,6 +20,7 @@ import { FloatingToolbar } from './reader/FloatingToolbar';
 import { ExplainModal } from './reader/ExplainModal';
 import { ReaderOverlays } from './reader/ReaderOverlays';
 import { SettingsModal } from './SettingsModal';
+import { BookOpen, ArrowRight, X } from 'lucide-react';
 
 export default function PdfTranslator() {
   const { settings, activeFileId, theme, toggleTheme, fontSize, setFontSize } = useAppContext();
@@ -54,7 +55,18 @@ export default function PdfTranslator() {
     pdfWrapperRef,
     onDocumentLoadSuccess,
     pdfDocument,
+    resumePrompt,
+    setResumePrompt,
   } = usePdfDocument({ activeFileId });
+
+  // 断点续读提示横幅在 15 秒后自动淡出
+  React.useEffect(() => {
+    if (!resumePrompt) return;
+    const timer = setTimeout(() => {
+      setResumePrompt(null);
+    }, 15000);
+    return () => clearTimeout(timer);
+  }, [resumePrompt, setResumePrompt]);
 
   // 自动从 Cloudflare D1 拉取云端最新翻译与剪藏数据
   React.useEffect(() => {
@@ -288,6 +300,36 @@ export default function PdfTranslator() {
 
   return (
     <div className={styles.container} ref={containerRef}>
+      {/* 断点续读提示横幅 */}
+      {resumePrompt && (
+        <div className={styles.resumeBanner}>
+          <div className={styles.resumeBannerText}>
+            <BookOpen size={15} className={styles.resumeBannerIcon} />
+            <span>检测到您上次阅读至第 <strong>{resumePrompt.page}</strong> 页{resumePrompt.totalPages ? ` (共 ${resumePrompt.totalPages} 页)` : ''}</span>
+          </div>
+          <div className={styles.resumeBannerActions}>
+            <button
+              type="button"
+              className={styles.resumeJumpBtn}
+              onClick={() => {
+                setPageNumber(resumePrompt.page);
+                setResumePrompt(null);
+              }}
+            >
+              立即跳转 <ArrowRight size={13} />
+            </button>
+            <button
+              type="button"
+              className={styles.resumeDismissBtn}
+              onClick={() => setResumePrompt(null)}
+              data-tooltip="留在第 1 页"
+            >
+              <X size={14} />
+            </button>
+          </div>
+        </div>
+      )}
+
       <ReaderOverlays
         isLoadingFile={!file}
         ghostFlyStyle={ghostFlyStyle}
