@@ -1,4 +1,5 @@
 import { HistoryRecord, saveHistoryRecord } from '@/lib/db';
+import { isStrongSyncKey, encryptE2EE, decryptE2EE } from '@/lib/crypto';
 
 export interface CloudBookMeta {
   book_fingerprint: string;
@@ -22,16 +23,24 @@ export interface CloudBookDetail {
 
 /**
  * 测试同步口令连接，并获取当前口令下的书籍数量
+ * 方案 1 & 2：强口令校验与 Header 凭据传输
  */
 export async function testCloudSyncConnection(syncKey: string): Promise<{ success: boolean; count: number; error?: string }> {
   if (!syncKey || !syncKey.trim()) {
     return { success: false, count: 0, error: '同步口令不能为空' };
   }
 
+  if (!isStrongSyncKey(syncKey)) {
+    return { success: false, count: 0, error: '口令长度不足：需至少 16 位高熵字符以防暴力破解' };
+  }
+
   try {
-    const res = await fetch(`/api/sync?key=${encodeURIComponent(syncKey.trim())}`, {
+    const res = await fetch('/api/sync', {
       method: 'GET',
-      headers: { 'Cache-Control': 'no-cache' },
+      headers: {
+        'Authorization': `Bearer ${syncKey.trim()}`,
+        'Cache-Control': 'no-cache',
+      },
     });
     const data = await res.json();
     if (!res.ok || !data.success) {
@@ -45,14 +54,18 @@ export async function testCloudSyncConnection(syncKey: string): Promise<{ succes
 
 /**
  * 获取云端书架中所有书籍的元数据列表（用于多端书架展示）
+ * 方案 2：口令移至 Authorization 请求头，避免在 URL 中暴露
  */
 export async function fetchCloudBookshelf(syncKey: string): Promise<CloudBookMeta[]> {
-  if (!syncKey || !syncKey.trim()) return [];
+  if (!syncKey || !isStrongSyncKey(syncKey)) return [];
 
   try {
-    const res = await fetch(`/api/sync?key=${encodeURIComponent(syncKey.trim())}`, {
+    const res = await fetch('/api/sync', {
       method: 'GET',
-      headers: { 'Cache-Control': 'no-cache' },
+      headers: {
+        'Authorization': `Bearer ${syncKey.trim()}`,
+        'Cache-Control': 'no-cache',
+      },
     });
     const data = await res.json();
     if (data.success && Array.isArray(data.books)) {
@@ -67,18 +80,32 @@ export async function fetchCloudBookshelf(syncKey: string): Promise<CloudBookMet
 
 /**
  * 根据书籍指纹从云端拉取整本书的翻译与剪藏数据
+ * 方案 5：下载后在前端执行 AES-GCM 端到端解密，兼容历史明文
  */
 export async function fetchBookFromCloud(syncKey: string, fingerprint: string): Promise<CloudBookDetail | null> {
-  if (!syncKey || !fingerprint) return null;
+  if (!syncKey || !fingerprint || !isStrongSyncKey(syncKey)) return null;
 
   try {
-    const res = await fetch(
-      `/api/sync?key=${encodeURIComponent(syncKey.trim())}&hash=${encodeURIComponent(fingerprint)}`,
-      { method: 'GET', headers: { 'Cache-Control': 'no-cache' } }
-    );
+    const res = await fetch(`/api/sync?hash=${encodeURIComponent(fingerprint)}`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${syncKey.trim()}`,
+        'Cache-Control': 'no-cache',
+      },
+    });
     const data = await res.json();
     if (data.success && data.record) {
-      return data.record;
+      const record = data.record;
+
+      // 端到端解密 translations 与 clips
+      const decryptedTranslations = await decryptE2EE(record.translations, syncKey);
+      const decryptedClips = await decryptE2EE(record.clips, syncKey);
+
+      return {
+        ...record,
+        translations: (decryptedTranslations && typeof decryptedTranslations === 'object') ? decryptedTranslations : {},
+        clips: Array.isArray(decryptedClips) ? decryptedClips : [],
+      };
     }
     return null;
   } catch (err) {
@@ -89,6 +116,8 @@ export async function fetchBookFromCloud(syncKey: string, fingerprint: string): 
 
 /**
  * 将本地书籍的翻译与剪藏增量或全量同步至云端
+ * 方案 5：发送前在客户端执行 AES-GCM 256 位端到端加密
+ * 方案 2：口令置于 Authorization 请求头，Body 中不含口令
  */
 export async function pushBookToCloud(
   record: HistoryRecord,
@@ -96,31 +125,61 @@ export async function pushBookToCloud(
   isPartial = false,
   partialData?: { translations?: Record<number, string>; clips?: any[] }
 ): Promise<boolean> {
-  if (!syncKey || !record.fingerprint) return false;
+  if (!syncKey || !record.fingerprint || !isStrongSyncKey(syncKey)) return false;
 
   try {
+    const rawTranslations = partialData?.translations || record.translations || {};
+    const rawClips = partialData?.clips || record.clips || [];
+
+    // 本地执行端到端加密
+    const encryptedTranslations = await encryptE2EE(rawTranslations, syncKey);
+    const encryptedClips = await encryptE2EE(rawClips, syncKey);
+
     const payload = {
-      syncKey: syncKey.trim(),
       bookFingerprint: record.fingerprint,
       filename: record.filename,
       totalPages: record.totalPages || 0,
       lastReadPage: record.lastReadPage || 1,
       lastReadTime: record.lastReadTime || Date.now(),
-      translations: partialData?.translations || record.translations || {},
-      clips: partialData?.clips || record.clips || [],
+      translations: encryptedTranslations,
+      clips: encryptedClips,
       isPartial,
     };
 
     const res = await fetch('/api/sync', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${syncKey.trim()}`,
+      },
       body: JSON.stringify(payload),
     });
 
     const data = await res.json();
     return !!data.success;
   } catch (err) {
-    console.error('Failed to push book to cloud', err);
+    console.error('Failed to push book to cloud with E2EE', err);
+    return false;
+  }
+}
+
+/**
+ * 删除指定书籍在云端的同步数据
+ */
+export async function deleteBookFromCloud(syncKey: string, fingerprint: string): Promise<boolean> {
+  if (!syncKey || !fingerprint || !isStrongSyncKey(syncKey)) return false;
+
+  try {
+    const res = await fetch(`/api/sync?hash=${encodeURIComponent(fingerprint)}`, {
+      method: 'DELETE',
+      headers: {
+        'Authorization': `Bearer ${syncKey.trim()}`,
+      },
+    });
+    const data = await res.json();
+    return !!data.success;
+  } catch (err) {
+    console.error('Failed to delete book from cloud', err);
     return false;
   }
 }
