@@ -7,6 +7,7 @@ import { ClipFlightCanvas, FlightPayload } from './ClipFlightCanvas';
 export interface ReaderOverlaysProps {
   isLoadingFile: boolean;
   flightPayload: FlightPayload | null;
+  onAbsorb?: () => void;
   onFlightComplete: () => void;
   isImmersive: boolean;
   pageNumber: number;
@@ -16,6 +17,7 @@ export interface ReaderOverlaysProps {
 export function ReaderOverlays({
   isLoadingFile,
   flightPayload,
+  onAbsorb,
   onFlightComplete,
   isImmersive,
   pageNumber,
@@ -34,6 +36,7 @@ export function ReaderOverlays({
 
       <ClipFlightCanvas
         flightPayload={flightPayload}
+        onAbsorb={onAbsorb}
         onFlightComplete={onFlightComplete}
       />
 
