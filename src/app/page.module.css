@@ -1652,5 +1652,247 @@
   margin-top: 8px;
 }
 
+/* === HOMEPAGE UNIFIED NAVBAR BUTTONS === */
+.headerBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  height: 36px;
+  padding: 0 14px;
+  background: var(--primary-surface);
+  color: var(--foreground);
+  border: 1px solid var(--glass-border);
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  box-sizing: border-box;
+  white-space: nowrap;
+}
 
+.headerBtn:hover {
+  background: var(--primary-glow);
+  border-color: var(--primary-border);
+  transform: translateY(-1px);
+}
 
+.headerBtnPrimary {
+  background: var(--primary);
+  color: #ffffff;
+  border: none;
+  font-weight: 600;
+  box-shadow: 0 2px 10px var(--primary-glow);
+}
+
+.headerBtnPrimary:hover {
+  background: var(--primary-hover);
+  box-shadow: 0 4px 16px var(--primary-glow);
+}
+
+.onlineDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #10b981;
+  display: inline-block;
+  box-shadow: 0 0 6px rgba(16, 185, 129, 0.7);
+}
+
+/* === RESUME READING BANNER (断点续读横幅) === */
+.resumeBanner {
+  position: absolute;
+  top: 60px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 14px 8px 18px;
+  background: var(--glass-bg);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--primary-border);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3), 0 0 14px var(--primary-glow);
+  border-radius: 9999px;
+  animation: slideDownFade 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes slideDownFade {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -10px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+.resumeBannerText {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--foreground);
+  white-space: nowrap;
+}
+
+.resumeBannerIcon {
+  color: var(--primary);
+  flex-shrink: 0;
+}
+
+.resumeBannerActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.resumeJumpBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 12px;
+  background: var(--primary);
+  color: #ffffff;
+  border: none;
+  border-radius: 9999px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.resumeJumpBtn:hover {
+  background: var(--primary-hover);
+  transform: scale(1.03);
+}
+
+.resumeDismissBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: none;
+  border: none;
+  color: #8e8e93;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.resumeDismissBtn:hover {
+  background: var(--primary-surface);
+  color: var(--foreground);
+}
+
+/* === SYNC MANAGEMENT PAGE === */
+.syncPageContainer {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 32px 24px 64px;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.syncCard {
+  background: var(--glass-bg);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--glass-border);
+  border-radius: 16px;
+  padding: 24px;
+  box-shadow: var(--glass-shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.syncCardHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.syncCardTitle {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--foreground);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+
+.syncKeyDisplayBox {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 10px;
+  padding: 8px 12px;
+}
+
+.syncKeyInput {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: var(--foreground);
+  font-size: 13.5px;
+  font-family: monospace;
+  letter-spacing: 0.05em;
+  outline: none;
+}
+
+.syncBadgeRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.syncSecurityBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-weight: 500;
+}
+
+.syncBookTable {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 13px;
+}
+
+.syncBookTable th {
+  text-align: left;
+  padding: 10px 12px;
+  color: #8e8e93;
+  font-weight: 500;
+  border-bottom: 1px solid var(--glass-border);
+  font-size: 12px;
+}
+
+.syncBookTable td {
+  padding: 12px;
+  border-bottom: 1px solid var(--glass-border);
+  color: var(--foreground);
+}
+
+.syncBookRow:hover td {
+  background: var(--primary-surface);
+}

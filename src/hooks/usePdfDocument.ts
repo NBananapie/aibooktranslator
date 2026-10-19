@@ -25,6 +25,7 @@ export function usePdfDocument(options: UsePdfDocumentOptions) {
   const [pdfDocument, setPdfDocument] = useState<any>(null);
   const [numPages, setNumPages] = useState<number>(0);
   const [pageNumber, setPageNumber] = useState<number>(1);
+  const [resumePrompt, setResumePrompt] = useState<{ page: number; totalPages?: number } | null>(null);
 
   // 标题修改状态
   const [isEditingTitle, setIsEditingTitle] = useState<boolean>(false);
@@ -42,7 +43,7 @@ export function usePdfDocument(options: UsePdfDocumentOptions) {
   const leftPaneRef = useRef<HTMLDivElement>(null);
   const pdfWrapperRef = useRef<HTMLDivElement>(null);
 
-  // 1. 初始化从 IndexedDB 加载文档记录
+  // 1. 初始化从 IndexedDB 加载文档记录并检测断点续读
   useEffect(() => {
     if (!activeFileId) return;
     getHistoryRecord(activeFileId).then(async record => {
@@ -59,13 +60,12 @@ export function usePdfDocument(options: UsePdfDocumentOptions) {
         setFile(new File([record.pdfData], record.filename, { type: 'application/pdf' }));
         setEditTitleValue(record.filename);
 
-        const initialPage = record.lastReadPage && record.lastReadPage >= 1 ? record.lastReadPage : 1;
-        setPageNumber(initialPage);
-
-        updateHistoryProgress(activeFileId, {
-          lastReadPage: initialPage,
-          lastReadTime: Date.now(),
-        }).catch(console.error);
+        // 断点续读：若记录存在大于 1 的阅读页码，触发立即跳转提示横幅
+        const savedPage = record.lastReadPage && record.lastReadPage > 1 ? record.lastReadPage : 1;
+        setPageNumber(1);
+        if (savedPage > 1) {
+          setResumePrompt({ page: savedPage, totalPages: record.totalPages });
+        }
 
         if (onRecordLoaded) {
           onRecordLoaded(record);
@@ -76,6 +76,19 @@ export function usePdfDocument(options: UsePdfDocumentOptions) {
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeFileId, router]);
+
+  // 实时持久化保存当前阅读进度，杜绝退出后进度丢失
+  useEffect(() => {
+    if (!activeFileId || !pageNumber || pageNumber < 1) return;
+    const timer = setTimeout(() => {
+      updateHistoryProgress(activeFileId, {
+        lastReadPage: pageNumber,
+        lastReadTime: Date.now(),
+      }).catch(console.error);
+      setDbRecord(prev => (prev ? { ...prev, lastReadPage: pageNumber, lastReadTime: Date.now() } : prev));
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [activeFileId, pageNumber]);
 
   // 2. 自适应动态监听左侧容器宽度，杜绝滚动条震荡造成的死循环
   useEffect(() => {
@@ -219,5 +232,7 @@ export function usePdfDocument(options: UsePdfDocumentOptions) {
     leftPaneRef,
     pdfWrapperRef,
     onDocumentLoadSuccess,
+    resumePrompt,
+    setResumePrompt,
   };
 }

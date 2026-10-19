@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 import { useAppContext, AppSettings, DEFAULT_SETTINGS, DEFAULT_OCR_SETTINGS } from '@/context/AppContext';
 import styles from '@/app/page.module.css';
 import {
@@ -38,6 +39,7 @@ export interface SettingsModalProps {
 }
 
 export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
+  const router = useRouter();
   const { settings, setSettings } = useAppContext();
   const [formSettings, setFormSettings] = useState<AppSettings>(settings);
   const [syncTestStatus, setSyncTestStatus] = useState<{ testing: boolean; message?: string; success?: boolean }>({
@@ -386,14 +388,27 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             <label style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
               <Cloud size={15} style={{ color: 'var(--primary)' }} /> 云端多端同步口令 (Cloudflare D1)
             </label>
-            <button
-              type="button"
-              className={styles.btnSecondary}
-              style={{ padding: '2px 8px', fontSize: '11px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
-              onClick={generateRandomSyncKey}
-            >
-              <Key size={11} /> 随机生成新口令
-            </button>
+            <div style={{ display: 'flex', gap: '6px' }}>
+              <button
+                type="button"
+                className={styles.btnSecondary}
+                style={{ padding: '2px 8px', fontSize: '11px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+                onClick={() => {
+                  onClose();
+                  router.push('/sync');
+                }}
+              >
+                前往独立管理页 →
+              </button>
+              <button
+                type="button"
+                className={styles.btnSecondary}
+                style={{ padding: '2px 8px', fontSize: '11px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+                onClick={generateRandomSyncKey}
+              >
+                <Key size={11} /> 随机生成新口令
+              </button>
+            </div>
           </div>
           <div style={{ display: 'flex', gap: '8px', marginTop: '6px' }}>
             <input
