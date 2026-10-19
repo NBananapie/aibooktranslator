@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from 'react';
 import { ClipItem, addHistoryClip, deleteHistoryClip } from '@/lib/db';
 import { exportClipsAsMarkdown, formatClipsForClipboard } from '@/services/exportService';
 import { isValidClippedText } from './useTextSelection';
+import styles from '@/app/page.module.css';
 
 export interface UseClipsManagerOptions {
   activeFileId: string | null;
@@ -78,31 +79,30 @@ export function useClipsManager(options: UseClipsManagerOptions) {
     const deltaX = targetX - (startRect.left + startW / 2);
     const deltaY = targetY - (startRect.top + startH / 2);
 
-    setGhostFlyText(textToClip.slice(0, 24) + (textToClip.length > 24 ? '...' : ''));
+    setGhostFlyText(textToClip.slice(0, 26) + (textToClip.length > 26 ? '...' : ''));
     setGhostFlyStyle({
-      top: startRect.top,
-      left: startRect.left,
-      width: startW,
-      transform: 'translate3d(0, 0, 0) scale(1)',
-      opacity: 1,
-    });
-
-    requestAnimationFrame(() => {
-      setTimeout(() => {
-        setGhostFlyStyle({
-          top: startRect.top,
-          left: startRect.left,
-          width: startW,
-          transform: `translate3d(${deltaX}px, ${deltaY}px, 0) scale(0.35)`,
-          opacity: 0,
-        });
-      }, 30);
+      top: `${startRect.top}px`,
+      left: `${startRect.left}px`,
+      width: `${startW}px`,
+      ['--delta-x' as any]: `${deltaX}px`,
+      ['--delta-y' as any]: `${deltaY}px`,
     });
 
     setTimeout(() => {
       setGhostFlyStyle(null);
       setGhostFlyText('');
-    }, 550);
+
+      // 落地吸收瞬间，触发侧边栏小把手的物理吸入共振冲击波
+      const btn = toggleBtnRef.current;
+      if (btn) {
+        btn.classList.remove(styles.toggleBtnAbsorbPulse);
+        void btn.offsetWidth; // 触发 reflow 重新触发关键帧
+        btn.classList.add(styles.toggleBtnAbsorbPulse);
+        setTimeout(() => {
+          btn.classList.remove(styles.toggleBtnAbsorbPulse);
+        }, 550);
+      }
+    }, 650);
 
     const newClip: ClipItem = {
       id: crypto.randomUUID(),
