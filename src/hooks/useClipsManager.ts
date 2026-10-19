@@ -39,10 +39,8 @@ export function useClipsManager(options: UseClipsManagerOptions) {
   // 120FPS 独立物理 Canvas 飞行载荷状态
   const [flightPayload, setFlightPayload] = useState<FlightPayload | null>(null);
 
-  const handleFlightComplete = useCallback(() => {
-    setFlightPayload(null);
-
-    // 落地吸收瞬间，触发侧边栏小把手的物理吸入共振冲击波
+  // 落地吸收瞬间，触发侧边栏小把手的物理吸入共振冲击波
+  const handleAbsorb = useCallback(() => {
     const btn = toggleBtnRef.current;
     if (btn) {
       btn.classList.remove(styles.toggleBtnAbsorbPulse);
@@ -52,6 +50,10 @@ export function useClipsManager(options: UseClipsManagerOptions) {
         btn.classList.remove(styles.toggleBtnAbsorbPulse);
       }, 550);
     }
+  }, []);
+
+  const handleFlightComplete = useCallback(() => {
+    setFlightPayload(null);
   }, []);
 
   // 1. 触发飞行微动效并持久化剪藏
@@ -164,6 +166,7 @@ export function useClipsManager(options: UseClipsManagerOptions) {
     toggleClipsDrawer,
     toggleBtnRef,
     flightPayload,
+    handleAbsorb,
     handleFlightComplete,
     addClip,
     deleteClip,
