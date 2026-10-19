@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { pdfjs } from 'react-pdf';
 import { AppSettings } from '@/context/AppContext';
-import { HistoryRecord, saveHistoryRecord } from '@/lib/db';
+import { HistoryRecord, saveHistoryRecord, getHistoryRecord } from '@/lib/db';
 import { executeTranslateStream } from '@/lib/llmClient';
 import {
   extractPdfTextWithHierarchy,
@@ -132,27 +132,30 @@ export function useTranslator(options: UseTranslatorOptions) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pageNumber, translationCache]);
 
-  // 3. 持久化 translationCache 到 IndexedDB
+  // 3. 持久化 translationCache 到 IndexedDB（合并数据库中最新状态，严防覆盖剪藏与最新进度）
   useEffect(() => {
     translationCacheRef.current = translationCache;
     if (dbRecord && Object.keys(translationCache).length > 0) {
-      const updatedRecord = {
-        ...dbRecord,
-        translations: translationCache,
-        totalPages: dbRecord.totalPages || numPages || 0,
-      };
-      setDbRecord(updatedRecord);
-      saveHistoryRecord(updatedRecord).catch(e => console.error('Save history error', e));
+      getHistoryRecord(dbRecord.id).then(latestRecord => {
+        const base = latestRecord || dbRecord;
+        const updatedRecord = {
+          ...base,
+          translations: translationCache,
+          totalPages: base.totalPages || numPages || 0,
+        };
+        setDbRecord(updatedRecord);
+        saveHistoryRecord(updatedRecord).catch(e => console.error('Save history error', e));
 
-      // 自动静默增量同步至 Cloudflare D1
-      if (settings?.syncKey?.trim() && settings?.autoCloudSync !== false && updatedRecord.fingerprint) {
-        if (cloudSyncTimerRef.current) clearTimeout(cloudSyncTimerRef.current);
-        cloudSyncTimerRef.current = setTimeout(() => {
-          pushBookToCloud(updatedRecord, settings.syncKey!).catch(err =>
-            console.error('Auto cloud sync error', err)
-          );
-        }, 1200);
-      }
+        // 自动静默增量同步至 Cloudflare D1
+        if (settings?.syncKey?.trim() && settings?.autoCloudSync !== false && updatedRecord.fingerprint) {
+          if (cloudSyncTimerRef.current) clearTimeout(cloudSyncTimerRef.current);
+          cloudSyncTimerRef.current = setTimeout(() => {
+            pushBookToCloud(updatedRecord, settings.syncKey!).catch(err =>
+              console.error('Auto cloud sync error', err)
+            );
+          }, 1200);
+        }
+      });
     }
   }, [translationCache, numPages, settings?.syncKey, settings?.autoCloudSync]);
 
