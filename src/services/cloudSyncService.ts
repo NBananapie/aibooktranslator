@@ -1,6 +1,9 @@
 import { HistoryRecord, saveHistoryRecord } from '@/lib/db';
 import { isStrongSyncKey, encryptE2EE, decryptE2EE } from '@/lib/crypto';
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type LegacySyncResponse = { success?: boolean; error?: string; totalCount?: number; books?: CloudBookMeta[]; record?: any };
+
 export interface CloudBookMeta {
   book_fingerprint: string;
   filename: string;
@@ -42,7 +45,7 @@ export async function testCloudSyncConnection(syncKey: string): Promise<{ succes
         'Cache-Control': 'no-cache',
       },
     });
-    const data = await res.json();
+    const data = (await res.json()) as LegacySyncResponse;
     if (!res.ok || !data.success) {
       return { success: false, count: 0, error: data.error || '连接云端失败' };
     }
@@ -67,7 +70,7 @@ export async function fetchCloudBookshelf(syncKey: string): Promise<CloudBookMet
         'Cache-Control': 'no-cache',
       },
     });
-    const data = await res.json();
+    const data = (await res.json()) as LegacySyncResponse;
     if (data.success && Array.isArray(data.books)) {
       return data.books;
     }
@@ -93,7 +96,7 @@ export async function fetchBookFromCloud(syncKey: string, fingerprint: string): 
         'Cache-Control': 'no-cache',
       },
     });
-    const data = await res.json();
+    const data = (await res.json()) as LegacySyncResponse;
     if (data.success && data.record) {
       const record = data.record;
 
@@ -155,7 +158,7 @@ export async function pushBookToCloud(
       body: JSON.stringify(payload),
     });
 
-    const data = await res.json();
+    const data = (await res.json()) as LegacySyncResponse;
     return !!data.success;
   } catch (err) {
     console.error('Failed to push book to cloud with E2EE', err);
@@ -176,7 +179,7 @@ export async function deleteBookFromCloud(syncKey: string, fingerprint: string):
         'Authorization': `Bearer ${syncKey.trim()}`,
       },
     });
-    const data = await res.json();
+    const data = (await res.json()) as LegacySyncResponse;
     return !!data.success;
   } catch (err) {
     console.error('Failed to delete book from cloud', err);

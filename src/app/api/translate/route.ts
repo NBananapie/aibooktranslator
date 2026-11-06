@@ -4,8 +4,7 @@ import {
   buildTranslateUserContent,
 } from '@/lib/llm/prompts';
 import { asTrimmedString, jsonError, proxyChat, readJsonBody, resolveUpstream } from '@/lib/server/llmProxy';
-
-export const runtime = 'edge';
+import { enforceRateLimit } from '@/lib/server/cloudflare';
 
 const MAX_BODY_BYTES = 256 * 1024;
 const MAX_TEXT_CHARS = 40_000;
@@ -21,6 +20,10 @@ export async function POST(req: Request) {
 
   const upstream = resolveUpstream(body);
   if (!upstream.ok) return jsonError(upstream.status, upstream.error);
+  if (upstream.usingServerKey) {
+    const limited = await enforceRateLimit(req, 'LLM_RATE_LIMITER', 'llm');
+    if (limited) return limited;
+  }
 
   const targetLanguage = asTrimmedString(body.targetLanguage, 32) || DEFAULT_TARGET_LANGUAGE;
   const customPrompt = asTrimmedString(body.customPrompt, MAX_PROMPT_CHARS);

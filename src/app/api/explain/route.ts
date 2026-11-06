@@ -1,8 +1,7 @@
 import { ChatMessage } from '@/lib/llm/protocol';
 import { EXPLAIN_SYSTEM_PROMPT, buildExplainUserPrompt } from '@/lib/llm/prompts';
 import { asTrimmedString, jsonError, proxyChat, readJsonBody, resolveUpstream } from '@/lib/server/llmProxy';
-
-export const runtime = 'edge';
+import { enforceRateLimit } from '@/lib/server/cloudflare';
 
 const MAX_BODY_BYTES = 256 * 1024;
 const MAX_SELECTED_CHARS = 4_000;
@@ -33,6 +32,10 @@ export async function POST(req: Request) {
 
   const upstream = resolveUpstream(body);
   if (!upstream.ok) return jsonError(upstream.status, upstream.error);
+  if (upstream.usingServerKey) {
+    const limited = await enforceRateLimit(req, 'LLM_RATE_LIMITER', 'llm');
+    if (limited) return limited;
+  }
 
   const contextText = asTrimmedString(body.contextText, MAX_CONTEXT_CHARS);
 

@@ -1,6 +1,5 @@
 import { jsonError, readJsonBody } from '@/lib/server/llmProxy';
-
-export const runtime = 'edge';
+import { enforceRateLimit } from '@/lib/server/cloudflare';
 
 const DEFAULT_OCR_JOBS_URL = 'https://paddleocr.aistudio-app.com/api/v2/ocr/jobs';
 /** 允许转发 OCR 作业的域名（含子域名），可用环境变量 OCR_ALLOWED_HOSTS 追加，逗号分隔 */
@@ -263,6 +262,9 @@ async function runPaddleOcrJob(
 }
 
 export async function POST(req: Request) {
+  const limited = await enforceRateLimit(req, 'API_RATE_LIMITER', 'ocr');
+  if (limited) return limited;
+
   const body = await readJsonBody(req, MAX_BODY_BYTES);
   if (body instanceof Response) return body;
 

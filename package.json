@@ -7,14 +7,18 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "pages:build": "npx @cloudflare/next-on-pages",
-    "pages:deploy": "npm run pages:build && wrangler pages deploy .vercel/output/static",
-    "pages:watch": "npx @cloudflare/next-on-pages --watch",
-    "pages:dev": "wrangler pages dev .vercel/output/static --compatibility-flag=nodejs_compat"
+    "typecheck": "tsc --noEmit",
+    "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
+    "deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
+    "upload": "opennextjs-cloudflare build && opennextjs-cloudflare upload",
+    "cf-typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts",
+    "db:migrate:local": "wrangler d1 migrations apply bookreader-db --local",
+    "db:migrate:remote": "wrangler d1 migrations apply bookreader-db --remote"
   },
   "dependencies": {
+    "@opennextjs/cloudflare": "1.20.16",
     "lucide-react": "^1.39.0",
-    "next": "16.2.4",
+    "next": "16.4.5",
     "openai": "^6.36.0",
     "pdfjs-dist": "^5.4.296",
     "react": "19.2.4",
@@ -28,7 +32,8 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
-    "eslint-config-next": "16.2.4",
-    "typescript": "^5"
+    "eslint-config-next": "16.4.5",
+    "typescript": "^5",
+    "wrangler": "4.158.0"
   }
 }

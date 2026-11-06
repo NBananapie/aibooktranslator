@@ -1,0 +1,55 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "aibooktranslator",
+  "main": ".open-next/worker.js",
+  "compatibility_date": "2025-09-01",
+  "compatibility_flags": [
+    // Next.js 运行所需的 Node.js API
+    "nodejs_compat",
+    // 服务端 fetch 只允许访问公网地址，阻止请求内网
+    "global_fetch_strictly_public"
+  ],
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS"
+  },
+  "services": [
+    {
+      // 必须与上方 name 一致
+      "binding": "WORKER_SELF_REFERENCE",
+      "service": "aibooktranslator"
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "bookreader-db",
+      "database_id": "94110e17-45e0-46c9-ade6-67db850b0d02",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "ratelimits": [
+    {
+      // 使用站点内置 Key 的翻译/解释请求，按客户端 IP 计数
+      "name": "LLM_RATE_LIMITER",
+      "namespace_id": "1001",
+      "simple": { "limit": 20, "period": 60 }
+    },
+    {
+      // 云同步与 OCR 接口，按客户端 IP 计数
+      "name": "API_RATE_LIMITER",
+      "namespace_id": "1002",
+      "simple": { "limit": 120, "period": 60 }
+    }
+  ],
+  "observability": {
+    "enabled": true
+  },
+  // 非敏感配置。API_KEY 等密钥请用 `npx wrangler secret put API_KEY` 设置，不要写在这里
+  "vars": {
+    "LLM_PROVIDER": "openai",
+    "BASE_URL": "https://apihub.agnes-ai.com/v1",
+    "MODEL": "agnes-3.0-flash",
+    "ALLOW_SERVER_API_KEY": "true"
+  }
+}

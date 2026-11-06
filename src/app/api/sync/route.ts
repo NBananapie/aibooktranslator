@@ -1,20 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
-
-export const runtime = 'edge';
+import { getD1 } from '@/lib/server/cloudflare';
 
 // 单次请求最大允许体积：5MB
 const MAX_PAYLOAD_SIZE = 5 * 1024 * 1024;
 // SHA-256 64位十六进制哈希正则
 const HASH_REGEX = /^[a-f0-9]{64}$/i;
 
-function getD1Database(): any {
-  if (typeof process !== 'undefined' && (process.env as any).DB) {
-    return (process.env as any).DB;
-  }
-  if (typeof globalThis !== 'undefined' && (globalThis as any).DB) {
-    return (globalThis as any).DB;
-  }
-  return null;
+async function getD1Database(): Promise<any> {
+  return getD1();
 }
 
 /**
@@ -67,7 +60,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ success: false, error: '非法书籍指纹格式（需为 64 位 SHA-256 哈希值）' }, { status: 400 });
   }
 
-  const db = getD1Database();
+  const db = await getD1Database();
   if (!db) {
     return NextResponse.json(
       { success: false, error: 'Cloudflare D1 数据库绑定未就绪，请在 Cloudflare Pages 线上环境中使用。' },
@@ -197,7 +190,7 @@ export async function POST(req: NextRequest) {
   const safeLastReadPage = Math.max(1, Math.min(100000, Number(lastReadPage) || 1));
   const safeLastReadTime = typeof lastReadTime === 'number' && lastReadTime > 0 ? lastReadTime : Date.now();
 
-  const db = getD1Database();
+  const db = await getD1Database();
   if (!db) {
     return NextResponse.json(
       { success: false, error: 'Cloudflare D1 数据库绑定未就绪，请在 Cloudflare Pages 线上环境中使用。' },
@@ -338,7 +331,7 @@ export async function DELETE(req: NextRequest) {
     return NextResponse.json({ success: false, error: '缺少或非法的书籍指纹 (需为 64 位 SHA-256 哈希值)' }, { status: 400 });
   }
 
-  const db = getD1Database();
+  const db = await getD1Database();
   if (!db) {
     return NextResponse.json({ success: false, error: 'D1 未就绪' }, { status: 503 });
   }
