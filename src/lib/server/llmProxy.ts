@@ -1,0 +1,131 @@
+/**
+ * /api/translate 与 /api/explain 共用的服务端代理逻辑。
+ *
+ * 安全约束：
+ * - 请求携带用户自己的 API Key 时，按用户提供的 baseUrl/model/provider 转发；
+ * - 请求未携带 Key 且服务端开启 ALLOW_SERVER_API_KEY 时，使用服务端环境变量中的 Key，
+ *   此时忽略客户端传入的 baseUrl/model/provider，避免服务端 Key 被发往任意地址。
+ */
+
+import {
+  ChatRequest,
+  DEFAULT_GEMINI_BASE_URL,
+  DEFAULT_OPENAI_BASE_URL,
+  DEFAULT_OPENAI_MODEL,
+  LlmEndpointConfig,
+  LlmProvider,
+  isGeminiEndpoint,
+  normalizeBaseUrl,
+  streamChat,
+} from '@/lib/llm/protocol';
+
+export interface ClientLlmFields {
+  apiKey?: unknown;
+  baseUrl?: unknown;
+  model?: unknown;
+  provider?: unknown;
+}
+
+export type UpstreamResolution =
+  | { ok: true; config: LlmEndpointConfig; usingServerKey: boolean }
+  | { ok: false; status: number; error: string };
+
+const PROVIDERS: readonly LlmProvider[] = ['openai', 'gemini', 'custom'];
+
+export function asTrimmedString(value: unknown, maxLength: number): string {
+  return typeof value === 'string' ? value.trim().slice(0, maxLength) : '';
+}
+
+function asProvider(value: unknown): LlmProvider | undefined {
+  return PROVIDERS.includes(value as LlmProvider) ? (value as LlmProvider) : undefined;
+}
+
+/** 用户自填的服务商地址只允许 https，且不能带用户名密码 */
+function validateClientBaseUrl(raw: string): string | null {
+  if (!raw) return null;
+  try {
+    const url = new URL(normalizeBaseUrl(raw));
+    if (url.protocol !== 'https:' || url.username || url.password) return null;
+    return url.toString().replace(/\/+$/, '');
+  } catch {
+    return null;
+  }
+}
+
+export function resolveUpstream(fields: ClientLlmFields): UpstreamResolution {
+  const clientKey = asTrimmedString(fields.apiKey, 512);
+
+  if (clientKey) {
+    const provider = asProvider(fields.provider);
+    const rawBaseUrl = asTrimmedString(fields.baseUrl, 2048);
+    const gemini = isGeminiEndpoint(provider, rawBaseUrl);
+    const baseUrl = rawBaseUrl
+      ? validateClientBaseUrl(rawBaseUrl)
+      : gemini
+        ? DEFAULT_GEMINI_BASE_URL
+        : DEFAULT_OPENAI_BASE_URL;
+    if (!baseUrl) {
+      return { ok: false, status: 400, error: 'Base URL 无效：仅支持 https 地址' };
+    }
+    return {
+      ok: true,
+      usingServerKey: false,
+      config: {
+        provider: gemini ? 'gemini' : provider,
+        baseUrl,
+        apiKey: clientKey,
+        model: asTrimmedString(fields.model, 200),
+      },
+    };
+  }
+
+  const serverKey = process.env.API_KEY || process.env.AGNES_API_KEY || process.env.DASHSCOPE_API_KEY;
+  if (process.env.ALLOW_SERVER_API_KEY !== 'true' || !serverKey) {
+    return {
+      ok: false,
+      status: 401,
+      error: '请先在「设置」中填写 API Key（本站未开放内置额度）',
+    };
+  }
+
+  return {
+    ok: true,
+    usingServerKey: true,
+    config: {
+      provider: asProvider(process.env.LLM_PROVIDER) ?? 'openai',
+      baseUrl: process.env.BASE_URL || DEFAULT_OPENAI_BASE_URL,
+      apiKey: serverKey,
+      model: process.env.MODEL || DEFAULT_OPENAI_MODEL,
+    },
+  };
+}
+
+export function jsonError(status: number, error: string): Response {
+  return Response.json({ error }, { status });
+}
+
+export async function readJsonBody(req: Request, maxBytes: number): Promise<Record<string, unknown> | Response> {
+  const declared = Number(req.headers.get('content-length') || 0);
+  if (declared > maxBytes) return jsonError(413, '请求体过大');
+  const raw = await req.text();
+  if (raw.length > maxBytes) return jsonError(413, '请求体过大');
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return jsonError(400, '请求体必须是 JSON 对象');
+    }
+    return parsed as Record<string, unknown>;
+  } catch {
+    return jsonError(400, '非法 JSON 数据格式');
+  }
+}
+
+/** 转发到上游，网络异常统一转为 502 */
+export async function proxyChat(config: LlmEndpointConfig, request: ChatRequest, signal?: AbortSignal): Promise<Response> {
+  try {
+    return await streamChat(config, request, signal);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return jsonError(502, `无法连接模型服务: ${message}`);
+  }
+}

@@ -1,6 +1,7 @@
 "use client";
 
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import type { LlmProvider } from '@/lib/llm/protocol';
 
 export interface OcrSettings {
   enabled: boolean;
@@ -14,7 +15,7 @@ export interface AppSettings {
   apiKey: string;
   baseUrl: string;
   model: string;
-  provider?: 'openai' | 'gemini' | 'custom';
+  provider?: LlmProvider;
   providerKeys?: Record<string, string>;
   customPrompt: string;
   ocr: OcrSettings;
@@ -22,7 +23,17 @@ export interface AppSettings {
   autoCloudSync?: boolean;
 }
 
-export const SETTINGS_VERSION = 'v5.3-cloud-sync';
+export const SETTINGS_VERSION = 'v6.0-no-builtin-key';
+
+/** 已吊销的旧内置 Key 前缀，加载本地设置时清除，避免继续使用 */
+const REVOKED_KEY_PREFIXES = ['sk-V9RUJ', 'AQ.Ab8RN6'];
+
+/** 旧版本写入 localStorage 的默认提示词开头，迁移时识别并清空，改用内置提示词 */
+const LEGACY_DEFAULT_PROMPT_PREFIX = 'You are an elite bilingual book editor, master translator, and typography architect.';
+
+function isRevokedKey(key?: string): boolean {
+  return !!key && REVOKED_KEY_PREFIXES.some(prefix => key.startsWith(prefix));
+}
 
 export const DEFAULT_OCR_SETTINGS: OcrSettings = {
   enabled: true,
@@ -32,35 +43,57 @@ export const DEFAULT_OCR_SETTINGS: OcrSettings = {
   apiUrl: 'https://paddleocr.aistudio-app.com/api/v2/ocr/jobs',
 };
 
+/**
+ * apiKey 为空表示使用站点内置额度（由服务端环境变量提供，是否开放取决于部署配置）。
+ * customPrompt 为空表示使用内置翻译提示词。
+ */
 export const DEFAULT_SETTINGS: AppSettings = {
-  apiKey: 'REDACTED_API_KEY',
+  apiKey: '',
   baseUrl: 'https://apihub.agnes-ai.com/v1',
   model: 'agnes-3.0-flash',
   provider: 'openai',
   providerKeys: {
-    'agnes': 'REDACTED_API_KEY',
+    'agnes': '',
     'minimax': '',
     'gemini': '',
     'openai': '',
   },
   syncKey: '',
   autoCloudSync: true,
-  customPrompt: `You are an elite bilingual book editor, master translator, and typography architect. Translate the following English text into elegant, publishable Chinese Markdown.
-
-CORE PRINCIPLES:
-1. "信达雅" (Faithful, Expressive, Elegant): Ensure the translation reads like a professionally published Chinese masterwork with natural, fluent, native phrasing.
-2. PRESERVE STRUCTURE & TYPOGRAPHY:
-   - Section Headings: Format headings as clear Markdown headings (## 标题 or ### 小标题).
-   - Core Takeaways & Quotes: Format notable quotes or key points as blockquotes (> ...).
-   - Paragraph Synthesis: Smoothly reconnect fragmented lines into cohesive paragraphs.
-   - Lists & Sequences: Convert bullet points into clean Markdown lists (-  or 1. ).
-   - Key Terms: Use **bold** for critical concepts and technical terms.
-3. OUTPUT FORMAT:
-   Output ONLY the translated Chinese Markdown. Do NOT include conversational filler, notes, or JSON metadata.`,
+  customPrompt: '',
   ocr: DEFAULT_OCR_SETTINGS,
 };
 
 export const DEFAULT_FONT_SIZE = 16;
+
+/**
+ * 读取 localStorage 中的设置并迁移：
+ * - 清除已吊销的旧内置 Key；
+ * - 旧版本自动写入的默认提示词清空为 ''（用户自己改过的提示词保留）。
+ */
+function migrateSettings(parsed: Partial<AppSettings>): AppSettings {
+  const providerKeys: Record<string, string> = {
+    ...DEFAULT_SETTINGS.providerKeys,
+    ...(parsed.providerKeys || {}),
+  };
+  for (const name of Object.keys(providerKeys)) {
+    if (isRevokedKey(providerKeys[name])) providerKeys[name] = '';
+  }
+
+  const apiKey = isRevokedKey(parsed.apiKey) ? '' : parsed.apiKey || '';
+  const customPrompt = parsed.customPrompt?.trim().startsWith(LEGACY_DEFAULT_PROMPT_PREFIX)
+    ? ''
+    : parsed.customPrompt || '';
+
+  return {
+    ...DEFAULT_SETTINGS,
+    ...parsed,
+    apiKey,
+    customPrompt,
+    providerKeys,
+    ocr: { ...DEFAULT_OCR_SETTINGS, ...(parsed.ocr || {}) },
+  };
+}
 
 interface AppContextType {
   settings: AppSettings;
@@ -84,77 +117,31 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [isLoaded, setIsLoaded] = useState(false);
 
   useEffect(() => {
-    // Load settings from localStorage with auto-migration to latest Agnes defaults
     const savedSettings = localStorage.getItem('pdf_translator_settings');
-    const savedSettingsVersion = localStorage.getItem('pdf_translator_version');
-    
+    let loaded = DEFAULT_SETTINGS;
     if (savedSettings) {
       try {
-        const parsed = JSON.parse(savedSettings);
-        
-        // 自动迁移检测：如果是旧版本的默认配置或旧模型，自动无缝升级到 Agnes 3.0 Flash
-        const isOldDefaultKey = !parsed.apiKey || parsed.apiKey.startsWith('AQ.Ab8RN6');
-        const isOldDefaultModel = parsed.model === 'gemini-3.5-flash-lite' || parsed.model === 'MiniMax-M2.7-highspeed';
-        
-        if (savedSettingsVersion !== SETTINGS_VERSION || isOldDefaultKey || isOldDefaultModel) {
-          if (isOldDefaultKey) {
-            parsed.apiKey = DEFAULT_SETTINGS.apiKey;
-          }
-          if (isOldDefaultModel || parsed.baseUrl?.includes('googleapis.com')) {
-            parsed.baseUrl = DEFAULT_SETTINGS.baseUrl;
-            parsed.model = DEFAULT_SETTINGS.model;
-            parsed.provider = DEFAULT_SETTINGS.provider;
-          }
-          parsed.customPrompt = DEFAULT_SETTINGS.customPrompt;
-          localStorage.setItem('pdf_translator_version', SETTINGS_VERSION);
-        }
-
-        const mergedKeys: Record<string, string> = {
-          ...DEFAULT_SETTINGS.providerKeys,
-          ...(parsed.providerKeys || {}),
-        };
-        if (parsed.apiKey) {
-          if (parsed.baseUrl?.includes('agnes-ai.com')) mergedKeys['agnes'] = parsed.apiKey;
-          else if (parsed.baseUrl?.includes('googleapis.com') || parsed.provider === 'gemini') mergedKeys['gemini'] = parsed.apiKey;
-          else if (parsed.baseUrl?.includes('minimax')) mergedKeys['minimax'] = parsed.apiKey;
-          else mergedKeys['openai'] = parsed.apiKey;
-        }
-
-        const mergedOcr: OcrSettings = {
-          ...DEFAULT_OCR_SETTINGS,
-          ...(parsed.ocr || {})
-        };
-        const mergedSettings: AppSettings = {
-          ...DEFAULT_SETTINGS,
-          ...parsed,
-          providerKeys: mergedKeys,
-          ocr: mergedOcr
-        };
-        localStorage.setItem('pdf_translator_settings', JSON.stringify(mergedSettings));
-        setSettingsState(mergedSettings);
+        loaded = migrateSettings(JSON.parse(savedSettings) as Partial<AppSettings>);
       } catch (e) {
         console.error('Failed to parse settings', e);
       }
-    } else {
-      localStorage.setItem('pdf_translator_version', SETTINGS_VERSION);
-      localStorage.setItem('pdf_translator_settings', JSON.stringify(DEFAULT_SETTINGS));
     }
+    localStorage.setItem('pdf_translator_settings', JSON.stringify(loaded));
+    localStorage.setItem('pdf_translator_version', SETTINGS_VERSION);
 
-    // Load theme from localStorage
-    const savedTheme = localStorage.getItem('app_theme') as 'dark' | 'light' | null;
+    const savedTheme = localStorage.getItem('app_theme');
     const initialTheme = savedTheme === 'light' || savedTheme === 'dark' ? savedTheme : 'dark';
-    setThemeState(initialTheme);
     document.documentElement.setAttribute('data-theme', initialTheme);
 
-    // Load font size from localStorage
-    const savedFontSize = localStorage.getItem('reader_font_size');
-    if (savedFontSize) {
-      const parsed = parseFloat(savedFontSize);
-      if (!isNaN(parsed) && parsed >= 12 && parsed <= 32) {
-        setFontSizeState(parsed);
-      }
-    }
+    const savedFontSize = parseFloat(localStorage.getItem('reader_font_size') || '');
+    const initialFontSize =
+      !isNaN(savedFontSize) && savedFontSize >= 12 && savedFontSize <= 32 ? savedFontSize : DEFAULT_FONT_SIZE;
 
+    // 从 localStorage 读取客户端持久化状态只能在挂载后进行，以避免水合不一致
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setSettingsState(loaded);
+    setThemeState(initialTheme);
+    setFontSizeState(initialFontSize);
     setIsLoaded(true);
   }, []);
 
@@ -170,8 +157,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   };
 
   const toggleTheme = () => {
-    const nextTheme = theme === 'dark' ? 'light' : 'dark';
-    setTheme(nextTheme);
+    setTheme(theme === 'dark' ? 'light' : 'dark');
   };
 
   const setFontSize = (sizeOrUpdater: number | ((prev: number) => number)) => {
@@ -186,13 +172,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
   if (!isLoaded) return null; // Prevent hydration mismatch
 
   return (
-    <AppContext.Provider value={{ 
-      settings, 
-      setSettings, 
-      activeFileId, 
-      setActiveFileId, 
-      theme, 
-      setTheme, 
+    <AppContext.Provider value={{
+      settings,
+      setSettings,
+      activeFileId,
+      setActiveFileId,
+      theme,
+      setTheme,
       toggleTheme,
       fontSize,
       setFontSize

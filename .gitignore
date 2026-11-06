@@ -40,3 +40,12 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# 书籍文件不入库（版权与仓库体积）
+*.pdf
+
+# OpenNext / Wrangler 构建与本地状态
+/.open-next/
+/.wrangler/
+.dev.vars*
+!.dev.vars.example

@@ -2,7 +2,8 @@
 
 import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { useAppContext, AppSettings, DEFAULT_SETTINGS, DEFAULT_OCR_SETTINGS } from '@/context/AppContext';
+import { useAppContext, AppSettings, DEFAULT_OCR_SETTINGS } from '@/context/AppContext';
+import { buildDefaultTranslatePrompt } from '@/lib/llm/prompts';
 import styles from '@/app/page.module.css';
 import {
   Settings as SettingsIcon,
@@ -120,12 +121,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
       [currentPKey]: formSettings.apiKey,
     };
 
-    const targetKey =
-      updatedKeys[targetPKey] !== undefined
-        ? updatedKeys[targetPKey]
-        : targetPKey === 'agnes'
-        ? DEFAULT_SETTINGS.apiKey
-        : '';
+    const targetKey = updatedKeys[targetPKey] ?? '';
 
     setFormSettings({
       ...formSettings,
@@ -222,9 +218,11 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             type="password" 
             value={formSettings.apiKey} 
             onChange={e => handleApiKeyChange(e.target.value)}
-            placeholder="填入你自己的 API Key (以 sk- 或 AQ. 开头)"
+            placeholder="留空使用站点内置额度；或填入你自己的 API Key"
           />
-          <p style={hintStyle}>Key 仅加密存储于浏览器本地，不经过任何第三方中转。</p>
+          <p style={hintStyle}>
+            Key 以明文保存在本浏览器的 localStorage 中，优先由浏览器直连服务商；若服务商不允许浏览器跨域访问，会改由本站服务端转发（Key 随请求经过本站，不做存储）。留空时使用站点内置额度，有频率限制。
+          </p>
         </div>
 
         <div className={styles.formGroup}>
@@ -478,8 +476,8 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
               type="button" 
               className={styles.btnSecondary} 
               style={{ padding: '3px 8px', fontSize: '11px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
-              onClick={() => setFormSettings({ ...formSettings, customPrompt: DEFAULT_SETTINGS.customPrompt })}
-              data-tooltip="重置为极速出版级提示词"
+              onClick={() => setFormSettings({ ...formSettings, customPrompt: '' })}
+              data-tooltip="清空后使用内置的出版级提示词"
             >
               <RotateCcw size={11} /> 恢复推荐提示词
             </button>
@@ -488,7 +486,9 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             rows={5}
             value={formSettings.customPrompt} 
             onChange={e => setFormSettings({ ...formSettings, customPrompt: e.target.value })}
+            placeholder={buildDefaultTranslatePrompt()}
           />
+          <p style={hintStyle}>留空时使用内置提示词（上方灰色文字）。</p>
         </div>
 
         <div className={styles.modalActions}>

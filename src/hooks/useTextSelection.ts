@@ -4,6 +4,7 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { AppSettings } from '@/context/AppContext';
 import { ClipItem } from '@/lib/db';
 import { executeExplainStream } from '@/lib/llmClient';
+import { readErrorResponse } from '@/lib/llm/protocol';
 import { SourceBlock } from '@/services/layoutAnalysisEngine';
 import { TargetBlock } from '@/services/alignmentEngine';
 
@@ -266,7 +267,7 @@ export function useTextSelection(options: UseTextSelectionOptions) {
       });
 
       if (!response.ok || !response.body) {
-        throw new Error('AI 解释服务请求失败');
+        throw new Error(await readErrorResponse(response, 'AI 解释服务请求失败'));
       }
 
       const reader = response.body.getReader();
@@ -319,7 +320,7 @@ export function useTextSelection(options: UseTextSelectionOptions) {
       });
 
       if (!response.ok || !response.body) {
-        throw new Error('追问请求响应异常');
+        throw new Error(await readErrorResponse(response, '追问请求响应异常'));
       }
 
       const reader = response.body.getReader();

@@ -1,269 +1,261 @@
+import { jsonError, readJsonBody } from '@/lib/server/llmProxy';
+
 export const runtime = 'edge';
 
-// Web 标准 Base64 转 Uint8Array (Edge Runtime 兼容)
+const DEFAULT_OCR_JOBS_URL = 'https://paddleocr.aistudio-app.com/api/v2/ocr/jobs';
+/** 允许转发 OCR 作业的域名（含子域名），可用环境变量 OCR_ALLOWED_HOSTS 追加，逗号分隔 */
+const BUILTIN_OCR_HOSTS = ['aistudio-app.com', 'aistudio.baidu.com'];
+/** OCR 结果文件下载地址允许的域名（飞桨结果存放在百度对象存储） */
+const BUILTIN_RESULT_HOSTS = ['aistudio-app.com', 'aistudio.baidu.com', 'bcebos.com', 'baidubce.com'];
+
+/** Base64 图片最大长度，约对应 9 MB 原始图片 */
+const MAX_IMAGE_BASE64_CHARS = 12 * 1024 * 1024;
+const MAX_BODY_BYTES = MAX_IMAGE_BASE64_CHARS + 64 * 1024;
+const POLL_INTERVAL_MS = 1200;
+const POLL_MAX_TIMES = 20;
+const QUEUE_FULL_CODE = 10010;
+
+type JsonObject = Record<string, unknown>;
+
+function isObject(value: unknown): value is JsonObject {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function str(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
+function hostAllowed(hostname: string, allowList: string[]): boolean {
+  const host = hostname.toLowerCase();
+  return allowList.some(allowed => host === allowed || host.endsWith(`.${allowed}`));
+}
+
+function extraHosts(): string[] {
+  return (process.env.OCR_ALLOWED_HOSTS || '')
+    .split(',')
+    .map(h => h.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+/** 校验 https 且域名在白名单内，返回规范化后的地址；不合法返回 null */
+function checkUrl(raw: string, allowList: string[]): string | null {
+  try {
+    const url = new URL(raw.trim());
+    if (url.protocol !== 'https:' || url.username || url.password) return null;
+    if (!hostAllowed(url.hostname, allowList)) return null;
+    return url.toString().replace(/\/+$/, '');
+  } catch {
+    return null;
+  }
+}
+
 function base64ToUint8Array(base64: string): Uint8Array {
   const binaryString = atob(base64);
-  const len = binaryString.length;
-  const bytes = new Uint8Array(len);
-  for (let i = 0; i < len; i++) {
+  const bytes = new Uint8Array(binaryString.length);
+  for (let i = 0; i < binaryString.length; i++) {
     bytes[i] = binaryString.charCodeAt(i);
   }
   return bytes;
 }
 
-// 递归提取百度飞桨 OCR / Layout 分析结果中的 Markdown / 结构化文本
-function extractTextFromPaddleResult(result: any): string {
+/** 递归提取飞桨 OCR / 版面分析结果中的 Markdown 或文本 */
+function extractTextFromPaddleResult(result: unknown): string {
   if (!result) return '';
+  if (typeof result === 'string') return result;
+  if (!isObject(result)) return '';
 
-  if (typeof result === 'string') {
-    return result;
-  }
-
-  // 1. PaddleOCR-VL-1.6 / PP-Structure: layoutParsingResults
+  // 1. PaddleOCR-VL / PP-Structure: layoutParsingResults
   if (Array.isArray(result.layoutParsingResults) && result.layoutParsingResults.length > 0) {
     const mdParts: string[] = [];
     for (const item of result.layoutParsingResults) {
       if (typeof item === 'string') {
         mdParts.push(item);
-      } else if (item.markdown && typeof item.markdown === 'string') {
-        mdParts.push(item.markdown);
-      } else if (item.prunedResult) {
-        if (typeof item.prunedResult === 'string') {
-          mdParts.push(item.prunedResult);
-        } else if (item.prunedResult.markdown) {
-          mdParts.push(item.prunedResult.markdown);
-        } else if (Array.isArray(item.prunedResult.parsing_res)) {
-          for (const elem of item.prunedResult.parsing_res) {
-            if (elem.block_content) mdParts.push(elem.block_content);
-            else if (elem.text) mdParts.push(elem.text);
+      } else if (isObject(item)) {
+        const pruned = item.prunedResult;
+        if (str(item.markdown)) {
+          mdParts.push(item.markdown as string);
+        } else if (typeof pruned === 'string') {
+          mdParts.push(pruned);
+        } else if (isObject(pruned)) {
+          if (str(pruned.markdown)) {
+            mdParts.push(pruned.markdown as string);
+          } else if (Array.isArray(pruned.parsing_res)) {
+            for (const elem of pruned.parsing_res) {
+              if (!isObject(elem)) continue;
+              const content = str(elem.block_content) || str(elem.text);
+              if (content) mdParts.push(content);
+            }
           }
+        } else if (str(item.text)) {
+          mdParts.push(item.text as string);
         }
-      } else if (item.text) {
-        mdParts.push(item.text);
       }
     }
-    if (mdParts.length > 0) {
-      return mdParts.join('\n\n').trim();
-    }
+    if (mdParts.length > 0) return mdParts.join('\n\n').trim();
   }
 
-  // 2. PP-OCR 通用识别：ocrResults / pages / rec_texts
-  if (Array.isArray(result.ocrResults)) {
+  // 2. PP-OCR 通用识别：ocrResults / pages
+  const collectRecTexts = (list: unknown, prunedKey: 'prunedResult' | 'pruned_result'): string[] => {
     const lines: string[] = [];
-    for (const r of result.ocrResults) {
+    if (!Array.isArray(list)) return lines;
+    for (const r of list) {
       if (typeof r === 'string') {
         lines.push(r);
-      } else if (r.prunedResult?.rec_texts && Array.isArray(r.prunedResult.rec_texts)) {
-        lines.push(...r.prunedResult.rec_texts.filter(Boolean));
-      } else if (r.words || r.text) {
-        lines.push(r.words || r.text);
+        continue;
+      }
+      if (!isObject(r)) continue;
+      const pruned = r[prunedKey];
+      if (isObject(pruned) && Array.isArray(pruned.rec_texts)) {
+        lines.push(...pruned.rec_texts.filter((t): t is string => typeof t === 'string' && !!t));
+      } else {
+        const text = str(r.words) || str(r.text);
+        if (text) lines.push(text);
       }
     }
-    if (lines.length > 0) {
-      return lines.join('\n');
-    }
-  }
+    return lines;
+  };
 
-  if (Array.isArray(result.pages)) {
-    const lines: string[] = [];
-    for (const page of result.pages) {
-      if (page.pruned_result?.rec_texts && Array.isArray(page.pruned_result.rec_texts)) {
-        lines.push(...page.pruned_result.rec_texts.filter(Boolean));
-      }
-    }
-    if (lines.length > 0) {
-      return lines.join('\n');
-    }
-  }
+  const ocrLines = collectRecTexts(result.ocrResults, 'prunedResult');
+  if (ocrLines.length > 0) return ocrLines.join('\n');
+  const pageLines = collectRecTexts(result.pages, 'pruned_result');
+  if (pageLines.length > 0) return pageLines.join('\n');
 
-  if (Array.isArray(result.words_result)) {
-    return result
-      .map((w: any) => (typeof w === 'string' ? w : w.words || ''))
-      .filter(Boolean)
-      .join('\n');
-  }
-
-  if (Array.isArray(result.prism_wordsInfo)) {
-    return result
-      .map((w: any) => (typeof w === 'string' ? w : w.word || ''))
-      .filter(Boolean)
-      .join('\n');
-  }
-
-  // 3. 通用字段检查
-  if (result.markdown && typeof result.markdown === 'string') {
-    return result.markdown;
-  }
-  if (result.text && typeof result.text === 'string') {
-    return result.text;
-  }
-  if (result.content && typeof result.content === 'string') {
-    return result.content;
-  }
+  // 3. 通用字段
+  const direct = str(result.markdown) || str(result.text) || str(result.content);
+  if (direct) return direct;
 
   // 4. 深度遍历所有包含文字的字段
   const texts: string[] = [];
-  const traverse = (obj: any) => {
-    if (!obj || typeof obj !== 'object') return;
-    if (obj.markdown && typeof obj.markdown === 'string') {
-      texts.push(obj.markdown);
-      return;
-    }
-    if (obj.rec_texts && Array.isArray(obj.rec_texts)) {
-      texts.push(...obj.rec_texts.filter(Boolean));
-      return;
-    }
-    if (obj.words && typeof obj.words === 'string') {
-      texts.push(obj.words);
-    }
-    if (obj.text && typeof obj.text === 'string') {
-      texts.push(obj.text);
-    }
-    if (obj.word && typeof obj.word === 'string') {
-      texts.push(obj.word);
-    }
-    for (const key of Object.keys(obj)) {
-      if (typeof obj[key] === 'object') {
-        traverse(obj[key]);
+  const traverse = (obj: unknown) => {
+    if (!isObject(obj) && !Array.isArray(obj)) return;
+    if (isObject(obj)) {
+      if (str(obj.markdown)) {
+        texts.push(obj.markdown as string);
+        return;
       }
+      if (Array.isArray(obj.rec_texts)) {
+        texts.push(...obj.rec_texts.filter((t): t is string => typeof t === 'string' && !!t));
+        return;
+      }
+      for (const key of ['words', 'text', 'word'] as const) {
+        const value = str(obj[key]);
+        if (value) texts.push(value);
+      }
+    }
+    for (const value of Object.values(obj)) {
+      if (value && typeof value === 'object') traverse(value);
     }
   };
   traverse(result);
-
   return texts.filter(Boolean).join('\n').trim();
 }
 
-// 异步提交并轮询百度飞桨 AIStudio PaddleOCR 作业
+async function fetchResultFile(rawUrl: unknown, kind: 'text' | 'json'): Promise<unknown> {
+  const url = typeof rawUrl === 'string' ? checkUrl(rawUrl, [...BUILTIN_RESULT_HOSTS, ...extraHosts()]) : null;
+  if (!url) return null;
+  const res = await fetch(url);
+  if (!res.ok) return null;
+  return kind === 'text' ? res.text() : res.json();
+}
+
+/** 提交飞桨 OCR 作业并轮询结果；队列满时依次尝试候选模型 */
 async function runPaddleOcrJob(
   rawToken: string,
   modelName: string,
   imageBytes: Uint8Array,
-  apiUrl?: string
-): Promise<{ text: string; raw: any }> {
-  // 清洗 Token 前缀，确保标准 Bearer 鉴权
+  jobsUrl: string
+): Promise<{ text: string; raw: unknown }> {
   const token = rawToken.replace(/^Bearer\s+/i, '').replace(/^token\s+/i, '').trim();
-
-  const baseBaseUrl = (apiUrl && apiUrl.includes('/api/v2/ocr/jobs'))
-    ? apiUrl.trim().replace(/\/+$/, '')
-    : 'https://paddleocr.aistudio-app.com/api/v2/ocr/jobs';
-
   const candidateModels = [modelName, 'PP-OCRv6', 'PP-StructureV3'].filter(
     (m, idx, self) => Boolean(m) && self.indexOf(m) === idx
   );
   let lastErrorMsg = '';
 
   for (const currentModel of candidateModels) {
+    const isLastModel = currentModel === candidateModels[candidateModels.length - 1];
     try {
       const formData = new FormData();
       formData.append('model', currentModel);
       formData.append('optionalPayload', JSON.stringify({}));
-      
-      const blob = new Blob([imageBytes as any], { type: 'image/png' });
-      formData.append('file', blob, 'page_screenshot.png');
+      formData.append('file', new Blob([imageBytes as BlobPart], { type: 'image/png' }), 'page_screenshot.png');
 
-      const submitRes = await fetch(baseBaseUrl, {
+      const submitRes = await fetch(jobsUrl, {
         method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
+        headers: { Authorization: `Bearer ${token}` },
         body: formData,
       });
-
       const submitText = await submitRes.text();
-      let submitData: any = null;
+      let submitData: JsonObject;
       try {
-        submitData = JSON.parse(submitText);
+        const parsed: unknown = JSON.parse(submitText);
+        submitData = isObject(parsed) ? parsed : { msg: submitText };
       } catch {
         submitData = { msg: submitText };
       }
 
-      if (!submitRes.ok || !submitData) {
-        lastErrorMsg = submitData?.msg || submitData?.message || `百度提交失败 (${submitRes.status}): ${submitText.slice(0, 200)}`;
-        // 如果是队列满，尝试下一个候选模型
-        if (submitData?.code === 10010) {
-          continue;
-        }
+      const code = submitData.code;
+      if (!submitRes.ok || (code !== 0 && code !== undefined)) {
+        lastErrorMsg =
+          str(submitData.msg) || str(submitData.message) || `飞桨提交失败 (${submitRes.status}): ${submitText.slice(0, 200)}`;
+        if (code === QUEUE_FULL_CODE && !isLastModel) continue;
         throw new Error(lastErrorMsg);
       }
 
-      if (submitData.code !== 0 && submitData.code !== undefined) {
-        lastErrorMsg = submitData.msg || `作业错误 (${submitData.code})`;
-        if (submitData.code === 10010) {
-          continue;
-        }
-        throw new Error(lastErrorMsg);
-      }
+      const data = isObject(submitData.data) ? submitData.data : {};
+      const jobId = str(data.jobId) || str(submitData.jobId) || str(data.id);
+      if (!jobId) throw new Error(`未获取到飞桨 OCR 任务 ID: ${submitText.slice(0, 200)}`);
 
-      const jobId = submitData.data?.jobId || submitData.jobId || submitData.data?.id;
-      if (!jobId) {
-        throw new Error(`未获取到百度飞桨 OCR 任务 ID: ${submitText.slice(0, 200)}`);
-      }
-
-      // 轮询等待任务完成 (最多轮询 20 次，约 25 秒)
-      for (let i = 0; i < 20; i++) {
-        await new Promise((resolve) => setTimeout(resolve, 1200));
-
-        const pollRes = await fetch(`${baseBaseUrl}/${jobId}`, {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
+      for (let i = 0; i < POLL_MAX_TIMES; i++) {
+        await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS));
+        const pollRes = await fetch(`${jobsUrl}/${encodeURIComponent(jobId)}`, {
+          headers: { Authorization: `Bearer ${token}` },
         });
-
         if (!pollRes.ok) continue;
 
-        const pollText = await pollRes.text();
-        let pollData: any = null;
+        let pollData: JsonObject;
         try {
-          pollData = JSON.parse(pollText);
+          const parsed: unknown = await pollRes.json();
+          if (!isObject(parsed)) continue;
+          pollData = parsed;
         } catch {
           continue;
         }
+        if (pollData.code !== 0) continue;
 
-        if (!pollData || pollData.code !== 0) continue;
-
-        const state = pollData.data?.state || pollData.state;
+        const pollInner = isObject(pollData.data) ? pollData.data : {};
+        const state = str(pollInner.state) || str(pollData.state);
 
         if (state === 'done' || state === 'success' || state === 'SUCCESS') {
-          const resultUrl = pollData.data?.resultUrl || pollData.resultUrl;
-          // 优先使用 PaddleOCR-VL 生成的高保真结构化 Markdown 文件 (保留标题、段落、表格与公式)
-          if (resultUrl?.markdownUrl) {
-            try {
-              const mdRes = await fetch(resultUrl.markdownUrl);
-              if (mdRes.ok) {
-                const mdText = await mdRes.text();
-                if (mdText.trim()) {
-                  return { text: mdText.trim(), raw: pollData };
-                }
-              }
-            } catch (e) {
-              console.warn('Failed to fetch markdownUrl, falling back to jsonUrl', e);
-            }
-          }
-          if (resultUrl?.jsonUrl) {
-            const jsonRes = await fetch(resultUrl.jsonUrl);
-            if (jsonRes.ok) {
-              const resultJson = await jsonRes.json();
-              const extracted = extractTextFromPaddleResult(resultJson.result || resultJson);
-              return { text: extracted, raw: resultJson };
-            }
-          }
+          const resultUrl = isObject(pollInner.resultUrl)
+            ? pollInner.resultUrl
+            : isObject(pollData.resultUrl)
+              ? pollData.resultUrl
+              : {};
 
-          const extracted = extractTextFromPaddleResult(pollData.data || pollData);
-          return { text: extracted, raw: pollData };
+          // 优先使用结构化 Markdown（保留标题、段落、表格与公式）
+          try {
+            const md = await fetchResultFile(resultUrl.markdownUrl, 'text');
+            if (typeof md === 'string' && md.trim()) return { text: md.trim(), raw: pollData };
+          } catch (e) {
+            console.warn('Failed to fetch markdownUrl, falling back to jsonUrl', e);
+          }
+          const resultJson = await fetchResultFile(resultUrl.jsonUrl, 'json');
+          if (resultJson) {
+            const inner = isObject(resultJson) && resultJson.result ? resultJson.result : resultJson;
+            return { text: extractTextFromPaddleResult(inner), raw: resultJson };
+          }
+          return { text: extractTextFromPaddleResult(pollInner), raw: pollData };
         }
 
         if (state === 'failed' || state === 'FAILED' || state === 'error') {
-          const errMsg = pollData.data?.errorMsg || pollData.errorMsg || '识别失败';
+          const errMsg = str(pollInner.errorMsg) || str(pollData.errorMsg) || '识别失败';
           throw new Error(`飞桨识别任务失败: ${errMsg}`);
         }
       }
-
       throw new Error('OCR 识别任务超时，请稍后重试');
-    } catch (err: any) {
-      lastErrorMsg = err.message || String(err);
-      if (currentModel === candidateModels[candidateModels.length - 1]) {
-        throw new Error(lastErrorMsg);
-      }
+    } catch (err) {
+      lastErrorMsg = err instanceof Error ? err.message : String(err);
+      if (isLastModel) throw new Error(lastErrorMsg);
     }
   }
 
@@ -271,59 +263,42 @@ async function runPaddleOcrJob(
 }
 
 export async function POST(req: Request) {
+  const body = await readJsonBody(req, MAX_BODY_BYTES);
+  if (body instanceof Response) return body;
+
+  const image = typeof body.image === 'string' ? body.image : '';
+  if (!image) return jsonError(400, '未提供图片数据');
+  if (image.length > MAX_IMAGE_BASE64_CHARS) return jsonError(413, '图片过大，请降低渲染倍率后重试');
+
+  const token = (typeof body.apiToken === 'string' && body.apiToken.trim()) || process.env.PADDLEOCR_ACCESS_TOKEN?.trim();
+  if (!token) {
+    return jsonError(
+      401,
+      '请先在「设置」中配置百度飞桨 AI Studio OCR Token（可前往 https://aistudio.baidu.com/paddleocr 免费注册并获取）。'
+    );
+  }
+
+  const rawApiUrl = typeof body.apiUrl === 'string' && body.apiUrl.trim() ? body.apiUrl : DEFAULT_OCR_JOBS_URL;
+  const jobsUrl = checkUrl(rawApiUrl, [...BUILTIN_OCR_HOSTS, ...extraHosts()]);
+  if (!jobsUrl) {
+    return jsonError(400, 'OCR 接口地址不在允许列表内（仅支持 https 的飞桨 AI Studio 域名）');
+  }
+
+  const model = (typeof body.model === 'string' && body.model.trim()) || 'PaddleOCR-VL-1.6';
+
   try {
-    const body = await req.json();
-    const {
-      image,
-      apiToken,
-      model = 'PaddleOCR-VL-1.6',
-      apiUrl,
-    } = body;
-
-    if (!image) {
-      return Response.json({ error: '未提供图片数据' }, { status: 400 });
-    }
-
-    const token = apiToken?.trim() || process.env.PADDLEOCR_ACCESS_TOKEN?.trim();
-    if (!token) {
-      return Response.json(
-        {
-          error:
-            '请先在「设置」中配置百度飞桨 AI Studio OCR Token（可前往 https://aistudio.baidu.com/paddleocr 免费注册并获取）。',
-        },
-        { status: 401 }
-      );
-    }
-
-    // 清洗 Base64 编码，转换为 Uint8Array
-    let cleanBase64 = image;
-    if (cleanBase64.includes('base64,')) {
-      cleanBase64 = cleanBase64.split('base64,')[1];
-    }
+    let cleanBase64 = image.includes('base64,') ? image.split('base64,')[1] : image;
     cleanBase64 = cleanBase64.replace(/[\r\n\s]/g, '');
     const imageBytes = base64ToUint8Array(cleanBase64);
 
-    const result = await runPaddleOcrJob(token, model, imageBytes, apiUrl);
-
+    const result = await runPaddleOcrJob(token, model, imageBytes, jobsUrl);
     if (!result.text.trim()) {
-      return Response.json({
-        text: '',
-        markdown: '',
-        raw: result.raw,
-        message: 'OCR 接口未识别到有效文字内容',
-      });
+      return Response.json({ text: '', markdown: '', message: 'OCR 接口未识别到有效文字内容' });
     }
-
-    return Response.json({
-      text: result.text,
-      markdown: result.text,
-      raw: result.raw,
-    });
-  } catch (error: any) {
+    return Response.json({ text: result.text, markdown: result.text });
+  } catch (error) {
     console.error('OCR Route Error:', error);
-    return Response.json(
-      { error: `OCR 处理发生异常: ${error.message || error}` },
-      { status: 500 }
-    );
+    const message = error instanceof Error ? error.message : String(error);
+    return jsonError(500, `OCR 处理发生异常: ${message}`);
   }
 }
