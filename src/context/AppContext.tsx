@@ -98,8 +98,6 @@ function migrateSettings(parsed: Partial<AppSettings>): AppSettings {
 interface AppContextType {
   settings: AppSettings;
   setSettings: (settings: AppSettings) => void;
-  activeFileId: string | null;
-  setActiveFileId: (id: string | null) => void;
   theme: 'dark' | 'light';
   setTheme: (theme: 'dark' | 'light') => void;
   toggleTheme: () => void;
@@ -111,7 +109,6 @@ const AppContext = createContext<AppContextType | undefined>(undefined);
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [settings, setSettingsState] = useState<AppSettings>(DEFAULT_SETTINGS);
-  const [activeFileId, setActiveFileId] = useState<string | null>(null);
   const [theme, setThemeState] = useState<'dark' | 'light'>('dark');
   const [fontSize, setFontSizeState] = useState<number>(DEFAULT_FONT_SIZE);
   const [isLoaded, setIsLoaded] = useState(false);
@@ -175,8 +172,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     <AppContext.Provider value={{
       settings,
       setSettings,
-      activeFileId,
-      setActiveFileId,
       theme,
       setTheme,
       toggleTheme,

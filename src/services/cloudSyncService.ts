@@ -1,247 +1,372 @@
-import { HistoryRecord, saveHistoryRecord } from '@/lib/db';
-import { isStrongSyncKey, encryptE2EE, decryptE2EE } from '@/lib/crypto';
+/**
+ * 云同步客户端（v2）。
+ * - 口令只在本地使用：派生出的 authToken 用于鉴权，encKey 用于加密，二者互相独立；
+ * - 按页、按剪藏增量推送与拉取，合并规则见 syncMerge.ts；
+ * - 首次同步某本书时，自动读取旧版（v1）云端数据并合并到本地，随后以 v2 格式推送。
+ */
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type LegacySyncResponse = { success?: boolean; error?: string; totalCount?: number; books?: CloudBookMeta[]; record?: any };
+import { ClipItem, HistoryRecord, getHistoryRecord, updateHistoryRecord } from '@/lib/db';
+import { decryptLegacyV1, decryptV2, deriveSyncKeys, encryptV2, isStrongSyncKey, SyncKeys } from '@/lib/crypto';
+import {
+  BookMetaPlain,
+  ClipPlain,
+  MAX_PUSH_ITEMS,
+  SyncClipItem,
+  SyncListResponse,
+  SyncPageItem,
+  SyncPullResponse,
+  SyncPushRequest,
+} from '@/lib/syncProtocol';
+import {
+  LegacyBookData,
+  RemoteChanges,
+  collectLocalChanges,
+  hasChanges,
+  mergeLegacyIntoRecord,
+  mergeRemoteIntoRecord,
+} from './syncMerge';
+
+const V2_ENDPOINT = '/api/sync/v2';
+const LEGACY_ENDPOINT = '/api/sync';
+/** 单次推送请求的密文总长度上限（服务端上限 3 MB，留出余量） */
+const PUSH_CHUNK_CHARS = 2 * 1024 * 1024;
+/** 增量拉取时间窗口重叠量，避免与并发写入错过 */
+const PULL_OVERLAP_MS = 5_000;
+const PUSH_DEBOUNCE_MS = 2_000;
 
 export interface CloudBookMeta {
-  book_fingerprint: string;
-  filename: string;
-  total_pages: number;
-  last_read_page: number;
-  last_read_time: number;
-  updated_at: number;
-}
-
-export interface CloudBookDetail {
   bookFingerprint: string;
   filename: string;
   totalPages: number;
   lastReadPage: number;
-  lastReadTime: number;
-  translations: Record<number, string>;
-  clips: any[];
   updatedAt: number;
+  pageCount?: number;
+  /** 仅存在于旧版（v1）表中，尚未迁移 */
+  legacy: boolean;
 }
 
-/**
- * 测试同步口令连接，并获取当前口令下的书籍数量
- * 方案 1 & 2：强口令校验与 Header 凭据传输
- */
-export async function testCloudSyncConnection(syncKey: string): Promise<{ success: boolean; count: number; error?: string }> {
-  if (!syncKey || !syncKey.trim()) {
-    return { success: false, count: 0, error: '同步口令不能为空' };
-  }
-
-  if (!isStrongSyncKey(syncKey)) {
-    return { success: false, count: 0, error: '口令长度不足：需至少 16 位高熵字符以防暴力破解' };
-  }
-
-  try {
-    const res = await fetch('/api/sync', {
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${syncKey.trim()}`,
-        'Cache-Control': 'no-cache',
-      },
-    });
-    const data = (await res.json()) as LegacySyncResponse;
-    if (!res.ok || !data.success) {
-      return { success: false, count: 0, error: data.error || '连接云端失败' };
-    }
-    return { success: true, count: data.totalCount || (data.books || []).length };
-  } catch (err: any) {
-    return { success: false, count: 0, error: err.message || '网络请求异常' };
-  }
+interface LegacyRecordResponse {
+  success?: boolean;
+  error?: string;
+  record?: {
+    translations?: unknown;
+    clips?: unknown;
+    totalPages?: number;
+    lastReadPage?: number;
+    updatedAt?: number;
+  } | null;
+  books?: { book_fingerprint: string; filename: string; total_pages: number; last_read_page: number; updated_at: number }[];
 }
 
-/**
- * 获取云端书架中所有书籍的元数据列表（用于多端书架展示）
- * 方案 2：口令移至 Authorization 请求头，避免在 URL 中暴露
- */
-export async function fetchCloudBookshelf(syncKey: string): Promise<CloudBookMeta[]> {
-  if (!syncKey || !isStrongSyncKey(syncKey)) return [];
+const aad = {
+  meta: (fp: string) => `${fp}|meta`,
+  page: (fp: string, page: number) => `${fp}|page|${page}`,
+  clip: (fp: string, id: string) => `${fp}|clip|${id}`,
+};
 
+function authHeaders(token: string): HeadersInit {
+  return { Authorization: `Bearer ${token}`, 'Cache-Control': 'no-cache' };
+}
+
+async function readError(res: Response): Promise<string> {
   try {
-    const res = await fetch('/api/sync', {
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${syncKey.trim()}`,
-        'Cache-Control': 'no-cache',
-      },
-    });
-    const data = (await res.json()) as LegacySyncResponse;
-    if (data.success && Array.isArray(data.books)) {
-      return data.books;
-    }
-    return [];
-  } catch (err) {
-    console.error('Failed to fetch cloud bookshelf', err);
-    return [];
+    const data = (await res.json()) as { error?: string };
+    return data.error || `HTTP ${res.status}`;
+  } catch {
+    return `HTTP ${res.status}`;
   }
 }
 
-/**
- * 根据书籍指纹从云端拉取整本书的翻译与剪藏数据
- * 方案 5：下载后在前端执行 AES-GCM 端到端解密，兼容历史明文
- */
-export async function fetchBookFromCloud(syncKey: string, fingerprint: string): Promise<CloudBookDetail | null> {
-  if (!syncKey || !fingerprint || !isStrongSyncKey(syncKey)) return null;
+/** 同一本书的同步操作串行执行 */
+const bookLocks = new Map<string, Promise<unknown>>();
+function withBookLock<T>(recordId: string, task: () => Promise<T>): Promise<T> {
+  const previous = bookLocks.get(recordId) ?? Promise.resolve();
+  const next = previous.catch(() => undefined).then(task);
+  bookLocks.set(recordId, next);
+  next.finally(() => {
+    if (bookLocks.get(recordId) === next) bookLocks.delete(recordId);
+  }).catch(() => undefined);
+  return next;
+}
 
-  try {
-    const res = await fetch(`/api/sync?hash=${encodeURIComponent(fingerprint)}`, {
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${syncKey.trim()}`,
-        'Cache-Control': 'no-cache',
-      },
-    });
-    const data = (await res.json()) as LegacySyncResponse;
-    if (data.success && data.record) {
-      const record = data.record;
+// ---------- 旧版数据迁移 ----------
 
-      // 端到端解密 translations 与 clips
-      const decryptedTranslations = await decryptE2EE(record.translations, syncKey);
-      const decryptedClips = await decryptE2EE(record.clips, syncKey);
+function toLegacyClips(raw: unknown): ClipItem[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (c): c is ClipItem =>
+      !!c && typeof c === 'object' && typeof c.id === 'string' && typeof c.text === 'string' && typeof c.pageNumber === 'number'
+  ).map(c => ({ ...c, createdAt: typeof c.createdAt === 'number' ? c.createdAt : Date.now() }));
+}
 
-      return {
-        ...record,
-        translations: (decryptedTranslations && typeof decryptedTranslations === 'object') ? decryptedTranslations : {},
-        clips: Array.isArray(decryptedClips) ? decryptedClips : [],
+async function migrateLegacy(record: HistoryRecord, syncKey: string): Promise<void> {
+  if (record.sync?.legacyChecked || !record.fingerprint) return;
+
+  const res = await fetch(`${LEGACY_ENDPOINT}?hash=${encodeURIComponent(record.fingerprint)}`, {
+    headers: authHeaders(syncKey.trim()),
+  });
+  // 服务不可用时下次再试；其他情况（含无旧数据）视为已检查
+  if (res.status >= 500) return;
+
+  let legacy: LegacyBookData | null = null;
+  if (res.ok) {
+    const data = (await res.json()) as LegacyRecordResponse;
+    if (data.record) {
+      const translations = await decryptLegacyV1(data.record.translations, syncKey);
+      const clips = await decryptLegacyV1(data.record.clips, syncKey);
+      legacy = {
+        translations: translations && typeof translations === 'object' ? (translations as Record<number, string>) : {},
+        clips: toLegacyClips(clips),
+        lastReadPage: data.record.lastReadPage,
+        totalPages: data.record.totalPages,
+        updatedAt: data.record.updatedAt || Date.now(),
       };
     }
-    return null;
-  } catch (err) {
-    console.error('Failed to fetch book from cloud', err);
-    return null;
   }
+
+  await updateHistoryRecord(record.id, r => ({
+    ...(legacy ? mergeLegacyIntoRecord(r, legacy) : r),
+    sync: { ...r.sync, legacyChecked: true },
+  }));
 }
 
-/**
- * 将本地书籍的翻译与剪藏增量或全量同步至云端
- * 方案 5：发送前在客户端执行 AES-GCM 256 位端到端加密
- * 方案 2：口令置于 Authorization 请求头，Body 中不含口令
- */
-export async function pushBookToCloud(
-  record: HistoryRecord,
-  syncKey: string,
-  isPartial = false,
-  partialData?: { translations?: Record<number, string>; clips?: any[] }
-): Promise<boolean> {
-  if (!syncKey || !record.fingerprint || !isStrongSyncKey(syncKey)) return false;
+// ---------- 拉取 ----------
 
-  try {
-    const rawTranslations = partialData?.translations || record.translations || {};
-    const rawClips = partialData?.clips || record.clips || [];
+async function pull(record: HistoryRecord, keys: SyncKeys): Promise<void> {
+  const fp = record.fingerprint!;
+  const since = record.sync?.pulledAt ?? 0;
+  const res = await fetch(`${V2_ENDPOINT}?hash=${fp}&since=${since}`, { headers: authHeaders(keys.authToken) });
+  if (!res.ok) throw new Error(`拉取云端数据失败: ${await readError(res)}`);
+  const data = (await res.json()) as SyncPullResponse;
 
-    // 本地执行端到端加密
-    const encryptedTranslations = await encryptE2EE(rawTranslations, syncKey);
-    const encryptedClips = await encryptE2EE(rawClips, syncKey);
+  const remote: RemoteChanges = { meta: null, pages: [], clips: [] };
 
-    const payload = {
-      bookFingerprint: record.fingerprint,
-      filename: record.filename,
-      totalPages: record.totalPages || 0,
-      lastReadPage: record.lastReadPage || 1,
-      lastReadTime: record.lastReadTime || Date.now(),
-      translations: encryptedTranslations,
-      clips: encryptedClips,
-      isPartial,
-    };
+  if (data.meta) {
+    try {
+      const meta = await decryptV2<BookMetaPlain>(data.meta.content, keys.encKey, aad.meta(fp));
+      remote.meta = { ...meta, updatedAt: data.meta.updatedAt };
+    } catch (err) {
+      console.warn('云端书籍信息解密失败', err);
+    }
+  }
 
-    const res = await fetch('/api/sync', {
+  for (const p of data.pages) {
+    try {
+      const text = await decryptV2<string>(p.content, keys.encKey, aad.page(fp, p.page));
+      remote.pages.push({ page: p.page, text, updatedAt: p.updatedAt });
+    } catch (err) {
+      console.warn(`云端第 ${p.page} 页译文解密失败`, err);
+    }
+  }
+
+  for (const c of data.clips) {
+    if (c.deleted || !c.content) {
+      remote.clips.push({ id: c.id, pageNumber: 0, text: '', createdAt: c.updatedAt, updatedAt: c.updatedAt, deletedAt: c.updatedAt });
+      continue;
+    }
+    try {
+      const plain = await decryptV2<ClipPlain>(c.content, keys.encKey, aad.clip(fp, c.id));
+      remote.clips.push({ ...plain, id: c.id, updatedAt: c.updatedAt });
+    } catch (err) {
+      console.warn('云端剪藏解密失败', err);
+    }
+  }
+
+  await updateHistoryRecord(record.id, r => ({
+    ...mergeRemoteIntoRecord(r, remote),
+    sync: { ...r.sync, pulledAt: Math.max(0, data.serverTime - PULL_OVERLAP_MS) },
+  }));
+}
+
+// ---------- 推送 ----------
+
+async function push(recordId: string, keys: SyncKeys): Promise<void> {
+  const record = await getHistoryRecord(recordId);
+  if (!record?.fingerprint) return;
+  const fp = record.fingerprint;
+
+  const startedAt = Date.now() - 1;
+  const changes = collectLocalChanges(record, record.sync?.pushedAt ?? 0);
+  if (!hasChanges(changes)) return;
+
+  const pages: SyncPageItem[] = await Promise.all(
+    changes.pages.map(async p => ({
+      page: p.page,
+      content: await encryptV2(p.text, keys.encKey, aad.page(fp, p.page)),
+      updatedAt: p.updatedAt,
+    }))
+  );
+
+  const clips: SyncClipItem[] = await Promise.all(
+    changes.clips.map(async c => {
+      const updatedAt = c.updatedAt ?? c.deletedAt ?? c.createdAt;
+      if (c.deletedAt) return { id: c.id, content: null, deleted: true, updatedAt };
+      const plain: ClipPlain = {
+        pageNumber: c.pageNumber,
+        text: c.text,
+        sourceText: c.sourceText,
+        note: c.note,
+        createdAt: c.createdAt,
+      };
+      return { id: c.id, content: await encryptV2(plain, keys.encKey, aad.clip(fp, c.id)), deleted: false, updatedAt };
+    })
+  );
+
+  const meta = changes.meta
+    ? {
+        content: await encryptV2(
+          { filename: changes.meta.filename, totalPages: changes.meta.totalPages, lastReadPage: changes.meta.lastReadPage },
+          keys.encKey,
+          aad.meta(fp)
+        ),
+        updatedAt: changes.meta.updatedAt,
+      }
+    : undefined;
+
+  // 按条数与体积分批
+  const batches: SyncPushRequest[] = [];
+  let current: SyncPushRequest = { bookFingerprint: fp, meta, pages: [], clips: [] };
+  let currentChars = meta?.content.length ?? 0;
+  const flush = () => {
+    batches.push(current);
+    current = { bookFingerprint: fp, pages: [], clips: [] };
+    currentChars = 0;
+  };
+  const add = (kind: 'pages' | 'clips', item: SyncPageItem | SyncClipItem, size: number) => {
+    const count = (current.pages?.length ?? 0) + (current.clips?.length ?? 0);
+    if (count > 0 && (count >= MAX_PUSH_ITEMS || currentChars + size > PUSH_CHUNK_CHARS)) flush();
+    if (kind === 'pages') current.pages!.push(item as SyncPageItem);
+    else current.clips!.push(item as SyncClipItem);
+    currentChars += size;
+  };
+  pages.forEach(p => add('pages', p, p.content.length));
+  clips.forEach(c => add('clips', c, c.content?.length ?? 0));
+  flush();
+
+  for (const batch of batches) {
+    const res = await fetch(V2_ENDPOINT, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${syncKey.trim()}`,
-      },
-      body: JSON.stringify(payload),
+      headers: { ...authHeaders(keys.authToken), 'Content-Type': 'application/json; charset=utf-8' },
+      body: JSON.stringify(batch),
     });
+    if (!res.ok) throw new Error(`推送云端数据失败: ${await readError(res)}`);
+  }
 
-    const data = (await res.json()) as LegacySyncResponse;
-    return !!data.success;
+  await updateHistoryRecord(recordId, r => ({ ...r, sync: { ...r.sync, pushedAt: startedAt } }));
+}
+
+// ---------- 对外接口 ----------
+
+/**
+ * 完整同步一本书：迁移旧数据 → 拉取 → 推送。返回同步后的本地记录。
+ */
+export function syncBook(recordId: string, syncKey: string): Promise<HistoryRecord | undefined> {
+  return withBookLock(recordId, async () => {
+    const keys = await deriveSyncKeys(syncKey);
+    let record = await getHistoryRecord(recordId);
+    if (!record?.fingerprint) return record;
+
+    await migrateLegacy(record, syncKey);
+    record = (await getHistoryRecord(recordId))!;
+    await pull(record, keys);
+    await push(recordId, keys);
+    return getHistoryRecord(recordId);
+  });
+}
+
+const pushTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+/** 防抖推送本地变化（翻译完成、剪藏增删、进度或文件名变化后调用） */
+export function schedulePush(recordId: string, syncKey: string, delay = PUSH_DEBOUNCE_MS): void {
+  if (!isStrongSyncKey(syncKey)) return;
+  const existing = pushTimers.get(recordId);
+  if (existing) clearTimeout(existing);
+  pushTimers.set(
+    recordId,
+    setTimeout(() => {
+      pushTimers.delete(recordId);
+      withBookLock(recordId, async () => push(recordId, await deriveSyncKeys(syncKey))).catch(err =>
+        console.error('云端同步推送失败', err)
+      );
+    }, delay)
+  );
+}
+
+/** 云端书架：v2 书籍 + 尚未迁移的旧版书籍 */
+export async function fetchCloudBookshelf(syncKey: string): Promise<CloudBookMeta[]> {
+  if (!isStrongSyncKey(syncKey)) return [];
+  const keys = await deriveSyncKeys(syncKey);
+
+  const [v2Res, legacyRes] = await Promise.all([
+    fetch(V2_ENDPOINT, { headers: authHeaders(keys.authToken) }),
+    fetch(LEGACY_ENDPOINT, { headers: authHeaders(syncKey.trim()) }).catch(() => null),
+  ]);
+  if (!v2Res.ok) throw new Error(await readError(v2Res));
+
+  const { books } = (await v2Res.json()) as SyncListResponse;
+  const result: CloudBookMeta[] = [];
+  for (const b of books) {
+    let meta: BookMetaPlain = { filename: '未命名文档.pdf', totalPages: 0, lastReadPage: 1 };
+    if (b.meta) {
+      try {
+        meta = await decryptV2<BookMetaPlain>(b.meta.content, keys.encKey, aad.meta(b.bookFingerprint));
+      } catch (err) {
+        console.warn('云端书籍信息解密失败', err);
+      }
+    }
+    result.push({
+      bookFingerprint: b.bookFingerprint,
+      filename: meta.filename,
+      totalPages: meta.totalPages,
+      lastReadPage: meta.lastReadPage,
+      updatedAt: b.serverUpdatedAt,
+      pageCount: b.pageCount,
+      legacy: false,
+    });
+  }
+
+  if (legacyRes?.ok) {
+    const legacy = (await legacyRes.json()) as LegacyRecordResponse;
+    const known = new Set(result.map(b => b.bookFingerprint));
+    for (const b of legacy.books || []) {
+      if (known.has(b.book_fingerprint)) continue;
+      result.push({
+        bookFingerprint: b.book_fingerprint,
+        filename: b.filename,
+        totalPages: b.total_pages,
+        lastReadPage: b.last_read_page,
+        updatedAt: b.updated_at,
+        legacy: true,
+      });
+    }
+  }
+
+  return result;
+}
+
+export async function testCloudSyncConnection(syncKey: string): Promise<{ success: boolean; count: number; error?: string }> {
+  if (!syncKey?.trim()) return { success: false, count: 0, error: '同步口令不能为空' };
+  if (!isStrongSyncKey(syncKey)) return { success: false, count: 0, error: '同步口令需为 16–128 个字符' };
+  try {
+    const books = await fetchCloudBookshelf(syncKey);
+    return { success: true, count: books.length };
   } catch (err) {
-    console.error('Failed to push book to cloud with E2EE', err);
-    return false;
+    return { success: false, count: 0, error: err instanceof Error ? err.message : '网络请求异常' };
   }
 }
 
-/**
- * 删除指定书籍在云端的同步数据
- */
+/** 删除 v2 云端数据（旧版数据只读，无法通过此接口删除） */
 export async function deleteBookFromCloud(syncKey: string, fingerprint: string): Promise<boolean> {
-  if (!syncKey || !fingerprint || !isStrongSyncKey(syncKey)) return false;
-
+  if (!isStrongSyncKey(syncKey)) return false;
   try {
-    const res = await fetch(`/api/sync?hash=${encodeURIComponent(fingerprint)}`, {
+    const keys = await deriveSyncKeys(syncKey);
+    const res = await fetch(`${V2_ENDPOINT}?hash=${encodeURIComponent(fingerprint)}`, {
       method: 'DELETE',
-      headers: {
-        'Authorization': `Bearer ${syncKey.trim()}`,
-      },
+      headers: authHeaders(keys.authToken),
     });
-    const data = (await res.json()) as LegacySyncResponse;
-    return !!data.success;
+    return res.ok;
   } catch (err) {
     console.error('Failed to delete book from cloud', err);
     return false;
   }
-}
-
-/**
- * 将云端获取的数据与本地 IndexedDB 记录合并，并持久化
- */
-export async function mergeCloudDataIntoLocal(
-  localRecord: HistoryRecord,
-  cloudData: CloudBookDetail
-): Promise<HistoryRecord> {
-  let hasChanges = false;
-
-  // 1. 合并翻译缓存 (以页面包含有效文本为准，保留较多/较完整的结果)
-  const localTrans = { ...(localRecord.translations || {}) };
-  const cloudTrans = cloudData.translations || {};
-
-  for (const pageStr of Object.keys(cloudTrans)) {
-    const page = parseInt(pageStr, 10);
-    const cloudText = cloudTrans[page];
-    const localText = localTrans[page];
-
-    if (cloudText && (!localText || cloudText.length > localText.length)) {
-      localTrans[page] = cloudText;
-      hasChanges = true;
-    }
-  }
-
-  // 2. 合并剪藏记录 (通过 clip.id 去重合并)
-  const localClips = localRecord.clips || [];
-  const cloudClips = cloudData.clips || [];
-  const clipMap = new Map();
-
-  localClips.forEach(c => clipMap.set(c.id, c));
-  cloudClips.forEach(c => {
-    if (!clipMap.has(c.id)) {
-      clipMap.set(c.id, c);
-      hasChanges = true;
-    }
-  });
-
-  // 3. 补全总页数与阅读进度
-  let lastReadPage = localRecord.lastReadPage;
-  if (!lastReadPage && cloudData.lastReadPage) {
-    lastReadPage = cloudData.lastReadPage;
-    hasChanges = true;
-  }
-
-  const updatedRecord: HistoryRecord = {
-    ...localRecord,
-    translations: localTrans,
-    clips: Array.from(clipMap.values()),
-    lastReadPage,
-    totalPages: localRecord.totalPages || cloudData.totalPages,
-  };
-
-  if (hasChanges) {
-    await saveHistoryRecord(updatedRecord);
-  }
-
-  return updatedRecord;
 }

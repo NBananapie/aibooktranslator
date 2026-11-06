@@ -1,14 +1,15 @@
 "use client";
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import { pdfjs } from 'react-pdf';
 import styles from '@/app/page.module.css';
 import { useAppContext } from '@/context/AppContext';
 import { useRouter } from 'next/navigation';
-import { ClipItem } from '@/lib/db';
+import { ClipItem, activeClips } from '@/lib/db';
 import { exportTranslationsAsMarkdown } from '@/services/exportService';
 import { capturePageCanvasAsBase64, requestPaddleOcr } from '@/services/ocrService';
-import { fetchBookFromCloud, mergeCloudDataIntoLocal, pushBookToCloud } from '@/services/cloudSyncService';
+import { schedulePush, syncBook } from '@/services/cloudSyncService';
+import { TargetBlock } from '@/services/alignmentEngine';
 import { usePdfDocument } from '@/hooks/usePdfDocument';
 import { useTranslator } from '@/hooks/useTranslator';
 import { useBilingualSync } from '@/hooks/useBilingualSync';
@@ -22,10 +23,17 @@ import { ReaderOverlays } from './reader/ReaderOverlays';
 import { SettingsModal } from './SettingsModal';
 import { BookOpen, ArrowRight, X } from 'lucide-react';
 
-export default function PdfTranslator() {
-  const { settings, activeFileId, theme, toggleTheme, fontSize, setFontSize } = useAppContext();
+const NO_TARGET_BLOCKS: TargetBlock[] = [];
+
+export default function PdfTranslator({ fileId }: { fileId: string }) {
+  const { settings, theme, toggleTheme, fontSize, setFontSize } = useAppContext();
   const router = useRouter();
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const syncEnabled = !!settings.syncKey?.trim() && settings.autoCloudSync !== false;
+
+  const requestPush = useCallback(() => {
+    if (syncEnabled && settings.syncKey) schedulePush(fileId, settings.syncKey);
+  }, [syncEnabled, settings.syncKey, fileId]);
 
   // 1. PDF 视口与文档状态
   const {
@@ -34,7 +42,7 @@ export default function PdfTranslator() {
     file,
     numPages,
     pageNumber,
-    setPageNumber,
+    goToPage,
     changePage,
     isEditingTitle,
     setIsEditingTitle,
@@ -57,7 +65,7 @@ export default function PdfTranslator() {
     pdfDocument,
     resumePrompt,
     setResumePrompt,
-  } = usePdfDocument({ activeFileId });
+  } = usePdfDocument({ fileId, onMetaChanged: requestPush });
 
   // 断点续读提示横幅在 15 秒后自动淡出
   React.useEffect(() => {
@@ -68,19 +76,29 @@ export default function PdfTranslator() {
     return () => clearTimeout(timer);
   }, [resumePrompt, setResumePrompt]);
 
-  // 自动从 Cloudflare D1 拉取云端最新翻译与剪藏数据
+  // 打开文档时与云端完整同步一次；页面重新可见时再同步，获取其他设备的修改
+  const fingerprint = dbRecord?.fingerprint;
   React.useEffect(() => {
-    if (!dbRecord?.fingerprint || !settings.syncKey?.trim() || settings.autoCloudSync === false) return;
-
-    fetchBookFromCloud(settings.syncKey, dbRecord.fingerprint)
-      .then(async cloudData => {
-        if (cloudData) {
-          const merged = await mergeCloudDataIntoLocal(dbRecord, cloudData);
-          setDbRecord(merged);
-        }
-      })
-      .catch(e => console.error('Cloud pull error', e));
-  }, [dbRecord?.fingerprint, settings.syncKey, settings.autoCloudSync]);
+    if (!fingerprint || !syncEnabled || !settings.syncKey) return;
+    const syncKey = settings.syncKey;
+    let cancelled = false;
+    const runSync = () => {
+      syncBook(fileId, syncKey)
+        .then(updated => {
+          if (!cancelled && updated) setDbRecord(prev => (prev && prev.id === updated.id ? updated : prev));
+        })
+        .catch(e => console.error('云端同步失败', e));
+    };
+    runSync();
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') runSync();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      cancelled = true;
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [fingerprint, fileId, syncEnabled, settings.syncKey, setDbRecord]);
 
   // 2. OCR 状态与视图切换
   const [ocrCache, setOcrCache] = useState<Record<number, string>>({});
@@ -95,6 +113,7 @@ export default function PdfTranslator() {
       const arrayBuffer = await file.arrayBuffer();
       doc = await pdfjs.getDocument({ data: arrayBuffer }).promise;
     }
+    if (!doc) throw new Error('PDF 尚未加载');
     const page = await doc.getPage(pageNumber);
     return capturePageCanvasAsBase64(page, 2.0);
   }, [pdfDocument, file, pageNumber]);
@@ -165,10 +184,8 @@ export default function PdfTranslator() {
 
   // 4. 翻译引擎调度与预加载
   const {
-    translatedText,
     displayedText,
-    targetBlocks,
-    fullTextRef,
+    isThinking,
     isTranslating,
     error,
     setError,
@@ -186,33 +203,22 @@ export default function PdfTranslator() {
     pageNumber,
     numPages,
     settings,
-    activeFileId,
     dbRecord,
     setDbRecord,
-    sourceBlocks,
-    onBilingualMapExtracted: (page, map) => {
-      setBilingualMapCache(prev => ({ ...prev, [page]: map }));
-    },
   });
+  const targetBlocks = NO_TARGET_BLOCKS;
 
   // 5. 知识剪藏库管理
   const handleClipsChange = useCallback(
-    (nextClips: ClipItem[]) => {
-      // 1. 同步更新 dbRecord 内存状态，防止后续被旧缓存覆写
-      setDbRecord(prev => (prev ? { ...prev, clips: nextClips } : prev));
-
-      // 2. 自动增量静默同步至 Cloudflare D1
-      if (settings?.syncKey?.trim() && settings?.autoCloudSync !== false && dbRecord?.fingerprint) {
-        pushBookToCloud(
-          { ...dbRecord, clips: nextClips },
-          settings.syncKey!,
-          true,
-          { clips: nextClips }
-        ).catch(err => console.error('Auto cloud sync clips error', err));
-      }
+    (allClips: ClipItem[]) => {
+      // 本地数据库已由 useClipsManager 写入，这里同步内存中的记录（含删除墓碑）并安排云端推送
+      setDbRecord(prev => (prev ? { ...prev, clips: allClips } : prev));
+      requestPush();
     },
-    [dbRecord, settings.syncKey, settings.autoCloudSync, setDbRecord]
+    [setDbRecord, requestPush]
   );
+
+  const initialClips = useMemo(() => activeClips(dbRecord?.clips), [dbRecord?.clips]);
 
   const {
     clips,
@@ -229,9 +235,9 @@ export default function PdfTranslator() {
     copyAllClips: handleCopyAllClips,
     exportClips: handleExportClipsMarkdown,
   } = useClipsManager({
-    activeFileId,
+    fileId,
     file,
-    initialClips: dbRecord?.clips,
+    initialClips,
     onClipsChange: handleClipsChange,
   });
 
@@ -269,7 +275,7 @@ export default function PdfTranslator() {
   });
 
   const handleAddClip = async () => {
-    if (!floatingToolbar || !floatingToolbar.text || !activeFileId) return;
+    if (!floatingToolbar || !floatingToolbar.text) return;
     const textToClip = floatingToolbar.text;
 
     if (floatingToolbar.isClipped && floatingToolbar.clipId) {
@@ -335,7 +341,7 @@ export default function PdfTranslator() {
               type="button"
               className={styles.resumeJumpBtn}
               onClick={() => {
-                setPageNumber(resumePrompt.page);
+                goToPage(resumePrompt.page);
                 setResumePrompt(null);
               }}
             >
@@ -400,7 +406,7 @@ export default function PdfTranslator() {
         onZoomIn={zoomIn}
         onZoomOut={zoomOut}
         onChangePage={changePage}
-        onSeekPage={setPageNumber}
+        onSeekPage={goToPage}
         onBackHome={() => router.push('/')}
         sourceBlocks={sourceBlocks}
         hoveredBlockId={hoveredBlockId}
@@ -438,9 +444,9 @@ export default function PdfTranslator() {
         isPreTranslating={isPreTranslating}
         isNextPageCached={!!translationCache[pageNumber + 1]}
         canPreTranslate={!!file && pageNumber < numPages && !isPreTranslating}
-        hasTranslatedText={!!translatedText}
+        hasTranslatedText={!!displayedText}
         displayedText={displayedText}
-        fullTextThinking={fullTextRef.current.includes('<think>')}
+        fullTextThinking={isThinking}
         error={error}
         ocrText={ocrCache[pageNumber]}
         pageNumber={pageNumber}
@@ -467,7 +473,7 @@ export default function PdfTranslator() {
         onCopyAll={handleCopyAllClips}
         onExportMarkdown={handleExportClipsMarkdown}
         onJumpToPage={(page, text) => {
-          setPageNumber(page);
+          goToPage(page);
           triggerHighlightFromZh(text, undefined, undefined, targetBlocks);
         }}
         onCopyClip={handleCopyClip}

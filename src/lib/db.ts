@@ -1,3 +1,11 @@
+/**
+ * 本地 IndexedDB 存储。
+ *
+ * v2 结构：
+ * - history：书籍元数据、译文、剪藏、同步状态（不含 PDF 原文件），按 fingerprint 建索引；
+ * - pdfFiles：PDF 原文件，按记录 id 存放，只在打开阅读器时读取。
+ */
+
 export interface ClipItem {
   id: string;
   pageNumber: number;
@@ -5,19 +13,44 @@ export interface ClipItem {
   sourceText?: string;
   note?: string;
   createdAt: number;
+  /** 最后修改时间，用于多端合并 */
+  updatedAt?: number;
+  /** 删除时间（墓碑）。存在时界面不显示，但保留用于同步删除 */
+  deletedAt?: number;
+}
+
+export interface BookSyncState {
+  /** 上次从云端拉取时的服务端时间，下次只拉取之后变化的数据 */
+  pulledAt?: number;
+  /** 上次成功推送的本地时间，之后修改的数据需要推送 */
+  pushedAt?: number;
+  /** 是否已检查并迁移旧版（v1）云端数据 */
+  legacyChecked?: boolean;
 }
 
 export interface HistoryRecord {
   id: string;
-  fingerprint?: string; // SHA-256 PDF内容指纹
+  fingerprint?: string; // SHA-256 PDF 内容指纹
   filename: string;
   date: number;
   lastReadTime?: number;
   totalPages?: number;
   lastReadPage?: number;
-  pdfData: ArrayBuffer;
+  /** 文件名或阅读进度的最后修改时间 */
+  metaUpdatedAt?: number;
   translations: Record<number, string>;
+  /** 每页译文的最后修改时间 */
+  translationTimes?: Record<number, number>;
   clips?: ClipItem[];
+  sync?: BookSyncState;
+}
+
+/** 旧版记录中内嵌了 PDF 数据 */
+type LegacyHistoryRecord = HistoryRecord & { pdfData?: ArrayBuffer };
+
+interface PdfFileEntry {
+  id: string;
+  data: ArrayBuffer;
 }
 
 export async function calculatePdfFingerprint(arrayBuffer: ArrayBuffer): Promise<string> {
@@ -27,138 +60,215 @@ export async function calculatePdfFingerprint(arrayBuffer: ArrayBuffer): Promise
     .join('');
 }
 
+/** 过滤掉已删除的剪藏 */
+export function activeClips(clips?: ClipItem[]): ClipItem[] {
+  return (clips || []).filter(c => !c.deletedAt);
+}
+
 const DB_NAME = 'PdfTranslatorDB';
-const STORE_NAME = 'history';
-const DB_VERSION = 1;
+const HISTORY_STORE = 'history';
+const PDF_STORE = 'pdfFiles';
+const FINGERPRINT_INDEX = 'fingerprint';
+const DB_VERSION = 2;
+
+let dbPromise: Promise<IDBDatabase> | null = null;
+
+function upgradeDatabase(db: IDBDatabase, tx: IDBTransaction, oldVersion: number) {
+  const history = db.objectStoreNames.contains(HISTORY_STORE)
+    ? tx.objectStore(HISTORY_STORE)
+    : db.createObjectStore(HISTORY_STORE, { keyPath: 'id' });
+
+  if (!history.indexNames.contains(FINGERPRINT_INDEX)) {
+    history.createIndex(FINGERPRINT_INDEX, 'fingerprint', { unique: false });
+  }
+
+  const pdfStore = db.objectStoreNames.contains(PDF_STORE)
+    ? tx.objectStore(PDF_STORE)
+    : db.createObjectStore(PDF_STORE, { keyPath: 'id' });
+
+  // v1 -> v2：把内嵌在记录里的 PDF 数据移到 pdfFiles
+  if (oldVersion > 0 && oldVersion < 2) {
+    const cursorRequest = history.openCursor();
+    cursorRequest.onsuccess = () => {
+      const cursor = cursorRequest.result;
+      if (!cursor) return;
+      const record = cursor.value as LegacyHistoryRecord;
+      if (record.pdfData) {
+        pdfStore.put({ id: record.id, data: record.pdfData } satisfies PdfFileEntry);
+        delete record.pdfData;
+        cursor.update(record);
+      }
+      cursor.continue();
+    };
+  }
+}
 
 function getDB(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
+  if (dbPromise) return dbPromise;
+  dbPromise = new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
-
-    request.onerror = () => reject(request.error);
-
-    request.onsuccess = () => resolve(request.result);
-
-    request.onupgradeneeded = (event: any) => {
-      const db = event.target.result;
-      if (!db.objectStoreNames.contains(STORE_NAME)) {
-        db.createObjectStore(STORE_NAME, { keyPath: 'id' });
-      }
+    request.onerror = () => {
+      dbPromise = null;
+      reject(request.error);
+    };
+    request.onsuccess = () => {
+      const db = request.result;
+      // 其他标签页升级数据库时关闭连接，下次调用重新打开
+      db.onversionchange = () => {
+        db.close();
+        dbPromise = null;
+      };
+      resolve(db);
+    };
+    request.onupgradeneeded = event => {
+      const tx = request.transaction;
+      if (tx) upgradeDatabase(request.result, tx, event.oldVersion);
     };
   });
+  return dbPromise;
+}
+
+function requestToPromise<T>(request: IDBRequest<T>): Promise<T> {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+function transactionDone(tx: IDBTransaction): Promise<void> {
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error('IndexedDB 事务已中止'));
+  });
+}
+
+/** 新建书籍记录与 PDF 文件（同一事务） */
+export async function createHistoryRecord(record: HistoryRecord, pdfData: ArrayBuffer): Promise<void> {
+  const db = await getDB();
+  const tx = db.transaction([HISTORY_STORE, PDF_STORE], 'readwrite');
+  tx.objectStore(HISTORY_STORE).put(record);
+  tx.objectStore(PDF_STORE).put({ id: record.id, data: pdfData } satisfies PdfFileEntry);
+  await transactionDone(tx);
 }
 
 export async function saveHistoryRecord(record: HistoryRecord): Promise<void> {
   const db = await getDB();
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction(STORE_NAME, 'readwrite');
-    const store = transaction.objectStore(STORE_NAME);
-    const request = store.put(record);
+  const tx = db.transaction(HISTORY_STORE, 'readwrite');
+  tx.objectStore(HISTORY_STORE).put(record);
+  await transactionDone(tx);
+}
 
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
-  });
+export async function savePdfData(id: string, data: ArrayBuffer): Promise<void> {
+  const db = await getDB();
+  const tx = db.transaction(PDF_STORE, 'readwrite');
+  tx.objectStore(PDF_STORE).put({ id, data } satisfies PdfFileEntry);
+  await transactionDone(tx);
+}
+
+export async function getPdfData(id: string): Promise<ArrayBuffer | undefined> {
+  const db = await getDB();
+  const entry = await requestToPromise<PdfFileEntry | undefined>(
+    db.transaction(PDF_STORE, 'readonly').objectStore(PDF_STORE).get(id)
+  );
+  return entry?.data;
 }
 
 export async function getHistoryRecord(id: string): Promise<HistoryRecord | undefined> {
   const db = await getDB();
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction(STORE_NAME, 'readonly');
-    const store = transaction.objectStore(STORE_NAME);
-    const request = store.get(id);
-
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-}
-
-export async function updateHistoryFilename(id: string, newFilename: string): Promise<void> {
-  const record = await getHistoryRecord(id);
-  if (!record) return;
-  record.filename = newFilename;
-  await saveHistoryRecord(record);
-}
-
-export async function updateHistoryProgress(
-  id: string,
-  data: { totalPages?: number; lastReadPage?: number; lastReadTime?: number }
-): Promise<void> {
-  const record = await getHistoryRecord(id);
-  if (!record) return;
-  if (data.totalPages !== undefined) record.totalPages = data.totalPages;
-  if (data.lastReadPage !== undefined) record.lastReadPage = data.lastReadPage;
-  if (data.lastReadTime !== undefined) record.lastReadTime = data.lastReadTime;
-  await saveHistoryRecord(record);
-}
-
-export async function addHistoryClip(id: string, clip: ClipItem): Promise<void> {
-  const record = await getHistoryRecord(id);
-  if (!record) return;
-  const existingClips = record.clips || [];
-  // 避免重复剪藏完全相同的文本
-  const filtered = existingClips.filter(c => c.id !== clip.id);
-  record.clips = [clip, ...filtered];
-  await saveHistoryRecord(record);
-}
-
-export async function deleteHistoryClip(id: string, clipId: string): Promise<void> {
-  const record = await getHistoryRecord(id);
-  if (!record || !record.clips) return;
-  record.clips = record.clips.filter(c => c.id !== clipId);
-  await saveHistoryRecord(record);
+  return requestToPromise<HistoryRecord | undefined>(
+    db.transaction(HISTORY_STORE, 'readonly').objectStore(HISTORY_STORE).get(id)
+  );
 }
 
 export async function getHistoryRecordByFingerprint(fingerprint: string): Promise<HistoryRecord | undefined> {
   const db = await getDB();
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction(STORE_NAME, 'readonly');
-    const store = transaction.objectStore(STORE_NAME);
-    const request = store.getAll();
+  const index = db.transaction(HISTORY_STORE, 'readonly').objectStore(HISTORY_STORE).index(FINGERPRINT_INDEX);
+  return requestToPromise<HistoryRecord | undefined>(index.get(fingerprint));
+}
 
-    request.onsuccess = () => {
-      const found = (request.result as HistoryRecord[]).find(r => r.fingerprint === fingerprint);
-      resolve(found);
-    };
-    request.onerror = () => reject(request.error);
+/** 所有书籍记录（不含 PDF 文件），按最近阅读时间倒序 */
+export async function getAllHistoryRecords(): Promise<HistoryRecord[]> {
+  const db = await getDB();
+  const records = await requestToPromise<HistoryRecord[]>(
+    db.transaction(HISTORY_STORE, 'readonly').objectStore(HISTORY_STORE).getAll()
+  );
+  return records.sort((a, b) => (b.lastReadTime || b.date) - (a.lastReadTime || a.date));
+}
+
+/**
+ * 在单个读写事务内读取、修改并写回记录，避免并发修改互相覆盖。
+ * updater 必须是同步函数；返回修改后的记录，记录不存在时返回 undefined。
+ */
+export async function updateHistoryRecord(
+  id: string,
+  updater: (record: HistoryRecord) => HistoryRecord
+): Promise<HistoryRecord | undefined> {
+  const db = await getDB();
+  const tx = db.transaction(HISTORY_STORE, 'readwrite');
+  const store = tx.objectStore(HISTORY_STORE);
+  let updated: HistoryRecord | undefined;
+  const getRequest = store.get(id);
+  getRequest.onsuccess = () => {
+    const current = getRequest.result as HistoryRecord | undefined;
+    if (!current) return;
+    updated = updater(current);
+    store.put(updated);
+  };
+  await transactionDone(tx);
+  return updated;
+}
+
+export function updateHistoryFilename(id: string, newFilename: string): Promise<HistoryRecord | undefined> {
+  return updateHistoryRecord(id, record => ({ ...record, filename: newFilename, metaUpdatedAt: Date.now() }));
+}
+
+export function updateHistoryProgress(
+  id: string,
+  data: { totalPages?: number; lastReadPage?: number; lastReadTime?: number }
+): Promise<HistoryRecord | undefined> {
+  return updateHistoryRecord(id, record => {
+    const next = { ...record };
+    if (data.totalPages !== undefined) next.totalPages = data.totalPages;
+    if (data.lastReadTime !== undefined) next.lastReadTime = data.lastReadTime;
+    if (data.lastReadPage !== undefined && data.lastReadPage !== record.lastReadPage) {
+      next.lastReadPage = data.lastReadPage;
+      next.metaUpdatedAt = Date.now();
+    }
+    return next;
   });
 }
 
-export async function getAllHistoryMetadata(): Promise<Omit<HistoryRecord, 'pdfData'>[]> {
-  const db = await getDB();
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction(STORE_NAME, 'readonly');
-    const store = transaction.objectStore(STORE_NAME);
-    const request = store.getAll();
+/** 写入单页译文 */
+export function setPageTranslation(id: string, page: number, text: string): Promise<HistoryRecord | undefined> {
+  return updateHistoryRecord(id, record => ({
+    ...record,
+    translations: { ...(record.translations || {}), [page]: text },
+    translationTimes: { ...(record.translationTimes || {}), [page]: Date.now() },
+  }));
+}
 
-    request.onsuccess = () => {
-      // Strip out the heavy pdfData to return just metadata for the list
-      const records = request.result.map(record => ({
-        id: record.id,
-        fingerprint: record.fingerprint,
-        filename: record.filename,
-        date: record.date,
-        lastReadTime: record.lastReadTime || record.date,
-        totalPages: record.totalPages,
-        lastReadPage: record.lastReadPage,
-        translations: record.translations || {},
-        clips: record.clips || []
-      }));
-      // Sort by lastReadTime or date descending
-      records.sort((a, b) => (b.lastReadTime || b.date) - (a.lastReadTime || a.date));
-      resolve(records);
-    };
-    request.onerror = () => reject(request.error);
-  });
+export function addHistoryClip(id: string, clip: ClipItem): Promise<HistoryRecord | undefined> {
+  const now = Date.now();
+  return updateHistoryRecord(id, record => ({
+    ...record,
+    clips: [{ ...clip, updatedAt: now }, ...(record.clips || []).filter(c => c.id !== clip.id)],
+  }));
+}
+
+/** 删除剪藏：保留墓碑记录，便于同步到其他设备 */
+export function deleteHistoryClip(id: string, clipId: string): Promise<HistoryRecord | undefined> {
+  const now = Date.now();
+  return updateHistoryRecord(id, record => ({
+    ...record,
+    clips: (record.clips || []).map(c => (c.id === clipId ? { ...c, deletedAt: now, updatedAt: now } : c)),
+  }));
 }
 
 export async function deleteHistoryRecord(id: string): Promise<void> {
   const db = await getDB();
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction(STORE_NAME, 'readwrite');
-    const store = transaction.objectStore(STORE_NAME);
-    const request = store.delete(id);
-
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
-  });
+  const tx = db.transaction([HISTORY_STORE, PDF_STORE], 'readwrite');
+  tx.objectStore(HISTORY_STORE).delete(id);
+  tx.objectStore(PDF_STORE).delete(id);
+  await transactionDone(tx);
 }

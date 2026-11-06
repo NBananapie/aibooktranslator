@@ -120,12 +120,27 @@ export async function readJsonBody(req: Request, maxBytes: number): Promise<Reco
   }
 }
 
-/** 转发到上游，网络异常统一转为 502 */
+/** 等待上游返回响应头的最长时间；之后的流式输出不受此限制 */
+const UPSTREAM_HEADER_TIMEOUT_MS = 30_000;
+
+/** 转发到上游，网络异常或超时统一转为 502/504 */
 export async function proxyChat(config: LlmEndpointConfig, request: ChatRequest, signal?: AbortSignal): Promise<Response> {
+  const controller = new AbortController();
+  const onClientAbort = () => controller.abort(signal?.reason);
+  signal?.addEventListener('abort', onClientAbort, { once: true });
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, UPSTREAM_HEADER_TIMEOUT_MS);
+
   try {
-    return await streamChat(config, request, signal);
+    return await streamChat(config, request, controller.signal);
   } catch (err) {
+    if (timedOut) return jsonError(504, '模型服务响应超时，请稍后重试');
     const message = err instanceof Error ? err.message : String(err);
     return jsonError(502, `无法连接模型服务: ${message}`);
+  } finally {
+    clearTimeout(timer);
   }
 }

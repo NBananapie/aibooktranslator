@@ -1,23 +1,21 @@
 "use client";
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAppContext } from '@/context/AppContext';
 import {
-  getAllHistoryMetadata,
-  saveHistoryRecord,
+  getAllHistoryRecords,
   HistoryRecord,
+  activeClips,
+  createHistoryRecord,
   deleteHistoryRecord,
+  savePdfData,
   updateHistoryFilename,
+  updateHistoryRecord,
   getHistoryRecordByFingerprint,
   calculatePdfFingerprint,
 } from '@/lib/db';
-import {
-  fetchBookFromCloud,
-  mergeCloudDataIntoLocal,
-  fetchCloudBookshelf,
-  CloudBookMeta,
-} from '@/services/cloudSyncService';
+import { fetchCloudBookshelf, CloudBookMeta } from '@/services/cloudSyncService';
 import { ProgressRing } from '@/components/ProgressRing';
 import { SettingsModal } from '@/components/SettingsModal';
 import styles from './page.module.css';
@@ -47,8 +45,8 @@ function formatTime(timestamp?: number): string {
 
 export default function Home() {
   const router = useRouter();
-  const { settings, setActiveFileId, theme, toggleTheme } = useAppContext();
-  const [history, setHistory] = useState<Omit<HistoryRecord, 'pdfData'>[]>([]);
+  const { settings, theme, toggleTheme } = useAppContext();
+  const [history, setHistory] = useState<HistoryRecord[]>([]);
   const [cloudBooks, setCloudBooks] = useState<CloudBookMeta[]>([]);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
@@ -57,71 +55,58 @@ export default function Home() {
   const [editingCardId, setEditingCardId] = useState<string | null>(null);
   const [editingCardName, setEditingCardName] = useState<string>('');
 
-  useEffect(() => {
-    loadHistory();
-  }, []);
-
-  const loadHistory = async () => {
+  const loadHistory = useCallback(async () => {
     try {
-      const records = await getAllHistoryMetadata();
-      setHistory(records);
-
-      if (settings.syncKey?.trim()) {
-        fetchCloudBookshelf(settings.syncKey)
-          .then(cb => setCloudBooks(cb || []))
-          .catch(e => console.error('Failed to load cloud bookshelf', e));
-      }
+      setHistory(await getAllHistoryRecords());
     } catch (err) {
       console.error("Failed to load history", err);
     }
-  };
+    if (settings.syncKey?.trim()) {
+      fetchCloudBookshelf(settings.syncKey)
+        .then(setCloudBooks)
+        .catch(e => console.error('Failed to load cloud bookshelf', e));
+    }
+  }, [settings.syncKey]);
+
+  useEffect(() => {
+    // 挂载后从 IndexedDB 与云端读取书架（外部数据源）
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    loadHistory();
+  }, [loadHistory]);
+
+  const openReader = (id: string) => router.push(`/translate?id=${encodeURIComponent(id)}`);
 
   const handleFileUpload = async (file: File) => {
     if (file.type !== 'application/pdf') {
       alert("请上传标准的 PDF 格式文件！");
       return;
     }
-    
-    const arrayBuffer = await file.arrayBuffer();
-    const fingerprint = await calculatePdfFingerprint(arrayBuffer);
 
-    // 1. 优先通过指纹查找本地是否已有此书
-    let record = await getHistoryRecordByFingerprint(fingerprint);
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const fingerprint = await calculatePdfFingerprint(arrayBuffer);
 
-    if (record) {
-      record.pdfData = arrayBuffer;
-      record.lastReadTime = Date.now();
-      if (!record.filename) record.filename = file.name;
-    } else {
-      const id = crypto.randomUUID();
-      record = {
-        id,
+      // 本地已有同一文件（按内容指纹）时复用原记录；云端数据在打开阅读器时自动同步
+      const existing = await getHistoryRecordByFingerprint(fingerprint);
+      if (existing) {
+        await savePdfData(existing.id, arrayBuffer);
+        await updateHistoryRecord(existing.id, r => ({ ...r, lastReadTime: Date.now() }));
+        openReader(existing.id);
+        return;
+      }
+
+      const now = Date.now();
+      const record: HistoryRecord = {
+        id: crypto.randomUUID(),
         fingerprint,
         filename: file.name,
-        date: Date.now(),
-        lastReadTime: Date.now(),
-        pdfData: arrayBuffer,
+        date: now,
+        lastReadTime: now,
         translations: {},
         clips: [],
       };
-    }
-
-    // 2. 如果开启了云端同步口令，合并拉取云端已有译文与剪藏
-    if (settings.syncKey?.trim()) {
-      try {
-        const cloudData = await fetchBookFromCloud(settings.syncKey, fingerprint);
-        if (cloudData) {
-          record = await mergeCloudDataIntoLocal(record, cloudData);
-        }
-      } catch (err) {
-        console.error('Failed to pull from cloud on file upload', err);
-      }
-    }
-
-    try {
-      await saveHistoryRecord(record);
-      setActiveFileId(record.id);
-      router.push('/translate');
+      await createHistoryRecord(record, arrayBuffer);
+      openReader(record.id);
     } catch (err) {
       console.error("Failed to save file to DB", err);
       alert("上传失败，可能文件过大或浏览器存储空间受限。");
@@ -154,8 +139,7 @@ export default function Home() {
 
   const openHistory = (id: string) => {
     if (editingCardId === id) return;
-    setActiveFileId(id);
-    router.push('/translate');
+    openReader(id);
   };
 
   const deleteHistory = async (e: React.MouseEvent, id: string) => {
@@ -166,7 +150,7 @@ export default function Home() {
     }
   };
 
-  const startEditingCard = (e: React.MouseEvent, item: Omit<HistoryRecord, 'pdfData'>) => {
+  const startEditingCard = (e: React.MouseEvent, item: HistoryRecord) => {
     e.stopPropagation();
     setEditingCardId(item.id);
     setEditingCardName(item.filename);
@@ -188,7 +172,7 @@ export default function Home() {
   };
 
   const unimportedCloudBooks = cloudBooks.filter(
-    cb => !history.some(h => h.fingerprint === cb.book_fingerprint)
+    cb => !history.some(h => h.fingerprint === cb.bookFingerprint)
   );
 
   return (
@@ -351,9 +335,9 @@ export default function Home() {
                               读至第 {item.lastReadPage} 页
                             </span>
                           )}
-                          {item.clips && item.clips.length > 0 && (
+                          {activeClips(item.clips).length > 0 && (
                             <span className={styles.badgeSubtle}>
-                              剪藏 {item.clips.length} 条
+                              剪藏 {activeClips(item.clips).length} 条
                             </span>
                           )}
                         </div>
@@ -375,7 +359,7 @@ export default function Home() {
               {/* 云端已有历史记录但本机尚未载入本地 PDF 的书籍 */}
               {unimportedCloudBooks.map(cb => (
                 <div
-                  key={cb.book_fingerprint}
+                  key={cb.bookFingerprint}
                   className={styles.historyCard}
                   style={{ borderStyle: 'dashed', opacity: 0.88, cursor: 'pointer' }}
                   onClick={() => {
@@ -400,12 +384,12 @@ export default function Home() {
                     <div className={styles.cardProgressMeta}>
                       <div className={styles.cardBadgeRow}>
                         <span className={styles.badge}>云端译文已就绪</span>
-                        {cb.total_pages > 0 && (
-                          <span className={styles.badgeSubtle}>共 {cb.total_pages} 页</span>
+                        {cb.totalPages > 0 && (
+                          <span className={styles.badgeSubtle}>共 {cb.totalPages} 页</span>
                         )}
                       </div>
                       <div className={styles.lastReadTimeRow}>
-                        <span>云端同步于: {formatTime(cb.updated_at)}</span>
+                        <span>云端同步于: {formatTime(cb.updatedAt)}</span>
                       </div>
                     </div>
                   </div>

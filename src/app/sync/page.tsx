@@ -170,7 +170,7 @@ export default function CloudSyncPage() {
     const ok = await deleteBookFromCloud(syncKey, fingerprint);
     setDeletingHash(null);
     if (ok) {
-      setCloudBooks(prev => prev.filter(b => b.book_fingerprint !== fingerprint));
+      setCloudBooks(prev => prev.filter(b => b.bookFingerprint !== fingerprint));
     } else {
       alert('从云端删除失败，请检查网络或口令有效性');
     }
@@ -387,7 +387,7 @@ export default function CloudSyncPage() {
                 </thead>
                 <tbody>
                   {cloudBooks.map(book => (
-                    <tr key={book.book_fingerprint} className={styles.syncBookRow}>
+                    <tr key={book.bookFingerprint} className={styles.syncBookRow}>
                       <td>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                           <FileText size={15} style={{ color: 'var(--primary)', flexShrink: 0 }} />
@@ -396,20 +396,20 @@ export default function CloudSyncPage() {
                           </span>
                         </div>
                       </td>
-                      <td>{book.total_pages > 0 ? `${book.total_pages} 页` : '-'}</td>
+                      <td>{book.totalPages > 0 ? `${book.totalPages} 页` : '-'}</td>
                       <td>
                         <span className={styles.badgeSubtle}>
-                          第 {book.last_read_page || 1} 页
+                          第 {book.lastReadPage || 1} 页
                         </span>
                       </td>
-                      <td>{formatTimestamp(book.updated_at)}</td>
+                      <td>{formatTimestamp(book.updatedAt)}{book.legacy ? '（旧版数据，打开该书后自动迁移）' : ''}</td>
                       <td style={{ textAlign: 'right' }}>
                         <button
                           type="button"
                           className={styles.deleteBtn}
-                          onClick={() => handleDeleteBook(book.book_fingerprint, book.filename)}
-                          disabled={deletingHash === book.book_fingerprint}
-                          data-tooltip="从云端彻底删除此书籍的同步记录"
+                          onClick={() => handleDeleteBook(book.bookFingerprint, book.filename)}
+                          disabled={book.legacy || deletingHash === book.bookFingerprint}
+                          data-tooltip={book.legacy ? '旧版数据只读，迁移后可删除' : '从云端彻底删除此书籍的同步记录'}
                         >
                           <Trash2 size={13} />
                         </button>
@@ -441,15 +441,15 @@ export default function CloudSyncPage() {
                 2. 客户端端到端加密 (E2EE)
               </h4>
               <p style={{ margin: 0, fontSize: '12px', color: '#8e8e93', lineHeight: 1.5 }}>
-                翻译文本与摘录在离开浏览器前，均使用您的口令派生出的 AES-GCM 256 位密钥在本地加密。云端 D1 仅存储不可读密文，即便数据泄露也无法还原文字。
+                译文、剪藏与书籍信息在离开浏览器前，用口令派生出的 AES-GCM 256 位密钥在本地加密。口令本身不会发送到服务器：服务器只收到另一把由口令派生的凭证，并只保存该凭证的哈希值，无法据此解密数据。
               </p>
             </div>
             <div style={{ background: 'var(--card-bg)', border: '1px solid var(--card-border)', borderRadius: '10px', padding: '14px' }}>
               <h4 style={{ margin: '0 0 6px 0', fontSize: '13px', fontWeight: 600, color: 'var(--foreground)' }}>
-                3. 免注册与高熵防御
+                3. 免注册与多端合并
               </h4>
               <p style={{ margin: 0, fontSize: '12px', color: '#8e8e93', lineHeight: 1.5 }}>
-                无需提供手机号或邮箱，通过 16+ 位高熵随机构造出 $2^{122}$ 级抗爆破能力，杜绝黑客字典枚举，同时在接口层严格限制 5MB 请求体以防范恶意攻击。
+                无需手机号或邮箱，推荐使用随机生成的口令（122 位随机数）。每页译文、每条剪藏单独同步，多台设备同时使用时按修改时间保留较新的一份，删除操作也会同步。请妥善保存口令，遗失后无法找回云端数据。
               </p>
             </div>
           </div>

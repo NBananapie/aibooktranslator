@@ -1,69 +1,88 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback, startTransition } from 'react';
-import { ClipItem, addHistoryClip, deleteHistoryClip } from '@/lib/db';
+import { ClipItem, activeClips, addHistoryClip, deleteHistoryClip } from '@/lib/db';
 import { exportClipsAsMarkdown, formatClipsForClipboard } from '@/services/exportService';
 import { isValidClippedText } from './useTextSelection';
 import styles from '@/app/page.module.css';
 import { FlightPayload } from '@/components/reader/ClipFlightCanvas';
 
 export interface UseClipsManagerOptions {
-  activeFileId: string | null;
+  fileId: string | null;
+  /** 当前未删除的剪藏（来自 IndexedDB 或云端合并后的记录） */
   initialClips?: ClipItem[];
   file?: File | null;
-  onClipsChange?: (clips: ClipItem[]) => void;
+  /** 本地写入后回调，参数为记录中的全部剪藏（含删除墓碑） */
+  onClipsChange?: (allClips: ClipItem[]) => void;
+}
+
+function sameIds(a: ClipItem[], b: ClipItem[]): boolean {
+  return a.length === b.length && a.every((item, i) => item.id === b[i]?.id);
 }
 
 export function useClipsManager(options: UseClipsManagerOptions) {
-  const { activeFileId, initialClips, file, onClipsChange } = options;
+  const { fileId, initialClips, file, onClipsChange } = options;
 
-  // 自动过滤历史中的纯标点脏数据
+  // 过滤纯标点等无效历史数据
   const [clips, setClips] = useState<ClipItem[]>(() =>
     (initialClips || []).filter(c => isValidClippedText(c.text))
   );
 
-  // 监听 initialClips（异步从 IndexedDB 或云端加载后响应式更新）
-  useEffect(() => {
-    if (initialClips === undefined) return;
-    const valid = initialClips.filter(c => isValidClippedText(c.text));
-    setClips(prev => {
-      if (prev.length === valid.length && prev.every((item, i) => item.id === valid[i]?.id)) {
-        return prev;
-      }
-      return valid;
-    });
-  }, [initialClips]);
+  // 记录异步加载或云端合并后同步到本地状态（渲染期间按 id 比较后更新，避免多余的 effect）
+  const [prevInitialClips, setPrevInitialClips] = useState(initialClips);
+  if (initialClips !== prevInitialClips) {
+    setPrevInitialClips(initialClips);
+    const valid = (initialClips || []).filter(c => isValidClippedText(c.text));
+    if (!sameIds(clips, valid)) setClips(valid);
+  }
+
   const [isClipsDrawerOpen, setIsClipsDrawerOpen] = useState<boolean>(false);
   const toggleBtnRef = useRef<HTMLButtonElement>(null);
+  const absorbTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // 120FPS 独立物理 Canvas 飞行载荷状态
+  // 剪藏飞行动画载荷
   const [flightPayload, setFlightPayload] = useState<FlightPayload | null>(null);
 
-  // 落地吸收瞬间，触发侧边栏小把手的物理吸入共振冲击波
+  useEffect(() => {
+    return () => {
+      if (absorbTimerRef.current) clearTimeout(absorbTimerRef.current);
+    };
+  }, []);
+
+  // 动画落地时，侧边栏把手播放吸入脉冲
   const handleAbsorb = useCallback(() => {
     const btn = toggleBtnRef.current;
-    if (btn) {
+    if (!btn) return;
+    btn.classList.remove(styles.toggleBtnAbsorbPulse);
+    void btn.offsetWidth;
+    btn.classList.add(styles.toggleBtnAbsorbPulse);
+    if (absorbTimerRef.current) clearTimeout(absorbTimerRef.current);
+    absorbTimerRef.current = setTimeout(() => {
       btn.classList.remove(styles.toggleBtnAbsorbPulse);
-      void btn.offsetWidth;
-      btn.classList.add(styles.toggleBtnAbsorbPulse);
-      setTimeout(() => {
-        btn.classList.remove(styles.toggleBtnAbsorbPulse);
-      }, 550);
-    }
+    }, 550);
   }, []);
 
   const handleFlightComplete = useCallback(() => {
     setFlightPayload(null);
   }, []);
 
-  // 1. 触发飞行微动效并持久化剪藏
+  const applyRecordClips = (allClips: ClipItem[] | undefined) => {
+    if (!allClips) return;
+    const visible = activeClips(allClips).filter(c => isValidClippedText(c.text));
+    // 降低重渲染优先级，避免阻塞飞行动画
+    startTransition(() => {
+      setClips(visible);
+      onClipsChange?.(allClips);
+    });
+  };
+
+  // 1. 播放飞行动画并持久化剪藏
   const addClip = async (
     textToClip: string,
     pageNumber: number,
     startBoundingRect?: { top: number; left: number; width?: number; height?: number }
   ): Promise<ClipItem | undefined> => {
-    // 严格有效性校验：纯标点或空白绝对禁止入库
-    if (!isValidClippedText(textToClip) || !activeFileId) return;
+    if (!isValidClippedText(textToClip) || !fileId) return;
 
     const startRect = startBoundingRect || {
       top: window.innerHeight / 2,
@@ -75,10 +94,9 @@ export function useClipsManager(options: UseClipsManagerOptions) {
     const startX = startRect.left + (startRect.width || 120) / 2;
     const startY = startRect.top + (startRect.height || 32) / 2;
 
-    // 动态计算目标中心点坐标（侧边栏打开时飞入抽屉顶部列表，收起时飞入折叠小把手）
+    // 抽屉打开时飞向抽屉顶部列表，收起时飞向折叠把手
     let targetX: number;
     let targetY: number;
-
     if (isClipsDrawerOpen) {
       targetX = window.innerWidth - 160;
       targetY = 90;
@@ -93,60 +111,39 @@ export function useClipsManager(options: UseClipsManagerOptions) {
       }
     }
 
-    // 立即启动 120FPS 独立物理 Canvas 贝塞尔吸入特效
-    setFlightPayload({
-      startX,
-      startY,
-      targetX,
-      targetY,
-      text: textToClip,
-    });
+    setFlightPayload({ startX, startY, targetX, targetY, text: textToClip });
 
+    const now = Date.now();
     const newClip: ClipItem = {
       id: crypto.randomUUID(),
       pageNumber,
       text: textToClip,
       sourceText: `第 ${pageNumber} 页书摘`,
-      createdAt: Date.now(),
+      createdAt: now,
+      updatedAt: now,
     };
 
-    await addHistoryClip(activeFileId, newClip);
-    const nextClips = [newClip, ...clips.filter(c => c.id !== newClip.id)];
-
-    // 使用 startTransition 降低大树重新渲染优先级，避免主线程渲染阻塞导致动画掉帧
-    startTransition(() => {
-      setClips(nextClips);
-      onClipsChange?.(nextClips);
-    });
-
+    const updated = await addHistoryClip(fileId, newClip);
+    applyRecordClips(updated?.clips);
     return newClip;
   };
 
-  // 2. 删除剪藏
+  // 2. 删除剪藏（本地保留墓碑以便同步删除）
   const deleteClip = async (clipId: string) => {
-    if (!activeFileId) return;
-    await deleteHistoryClip(activeFileId, clipId);
-    const nextClips = clips.filter(c => c.id !== clipId);
-    startTransition(() => {
-      setClips(nextClips);
-      onClipsChange?.(nextClips);
-    });
+    if (!fileId) return;
+    const updated = await deleteHistoryClip(fileId, clipId);
+    applyRecordClips(updated?.clips);
   };
 
   // 3. 复制单条剪藏
   const copyClip = (text: string) => {
-    if (navigator.clipboard?.writeText) {
-      navigator.clipboard.writeText(text).catch(err => console.error('Copy failed', err));
-    }
+    navigator.clipboard?.writeText(text).catch(err => console.error('Copy failed', err));
   };
 
   // 4. 复制全部剪藏
   const copyAllClips = () => {
     if (clips.length === 0) return;
-    const content = formatClipsForClipboard(clips);
-    if (navigator.clipboard?.writeText) {
-      navigator.clipboard.writeText(content).catch(err => console.error('Copy failed', err));
-    }
+    navigator.clipboard?.writeText(formatClipsForClipboard(clips)).catch(err => console.error('Copy failed', err));
   };
 
   // 5. 导出剪藏为 Markdown 文件
@@ -160,7 +157,6 @@ export function useClipsManager(options: UseClipsManagerOptions) {
 
   return {
     clips,
-    setClips,
     isClipsDrawerOpen,
     setIsClipsDrawerOpen,
     toggleClipsDrawer,

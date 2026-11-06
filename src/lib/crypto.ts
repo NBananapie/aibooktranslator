@@ -1,177 +1,171 @@
 /**
- * 端到端加密 (E2EE) 与高熵口令安全工具模块
- * 使用 W3C Web Cryptography API (PBKDF2 + AES-GCM 256-bit)
- * 零第三方外部依赖，纯原生跨平台支持 (浏览器 / Edge Runtime / Node.js)
+ * 云同步口令与端到端加密。
+ * 使用 Web Crypto API（PBKDF2 + HKDF + AES-GCM 256-bit），浏览器与 Workers 均可运行。
+ *
+ * v2 方案：
+ *   主密钥 = PBKDF2(口令, 固定盐, 600000 次, SHA-256)
+ *   authToken = HKDF(主密钥, info="auth-v2")     → 发送给服务端用于寻址，服务端只保存它的 SHA-256
+ *   encKey    = HKDF(主密钥, info="enc-v2")      → 只在本地使用，服务端无法得到
+ * 每条密文以 AES-GCM 加密，并把"书籍指纹 + 数据类型 + 条目编号"作为附加认证数据，
+ * 防止服务端把一条密文挪到别的书或别的页。
+ *
+ * v1 方案（旧数据，只用于迁移读取）：PBKDF2(口令, 固定盐, 100000 次) 直接得到 AES 密钥，
+ * 且口令本身以明文发送并存储在服务端。
  */
 
-const E2EE_PREFIX = 'e2ee:v1:';
-const E2EE_SALT = new TextEncoder().encode('aibooktranslator-e2ee-salt-v1');
-const PBKDF2_ITERATIONS = 100000;
+const E2EE_V1_PREFIX = 'e2ee:v1:';
+const E2EE_V2_PREFIX = 'e2ee:v2:';
+const V1_SALT = 'aibooktranslator-e2ee-salt-v1';
+const V1_ITERATIONS = 100_000;
+const V2_SALT = 'aibooktranslator-sync-v2';
+const V2_ITERATIONS = 600_000;
 
-/**
- * 校验同步口令强度
- * 必须达到至少 16 位字符的高熵要求，防字典暴力破解
- */
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+
+export interface SyncKeys {
+  /** 64 位十六进制，作为 Authorization: Bearer 凭证 */
+  authToken: string;
+  encKey: CryptoKey;
+}
+
+/** 同步口令长度要求：16–128 个字符 */
 export function isStrongSyncKey(key?: string | null): boolean {
   if (!key) return false;
   const trimmed = key.trim();
   return trimmed.length >= 16 && trimmed.length <= 128;
 }
 
-/**
- * 生成强随机高熵同步口令 (UUIDv4 格式)
- * 长度达 37 字符，熵值 122 bits，数学上不可被穷举
- */
+/** 生成随机同步口令：sync- 前缀 + UUIDv4（122 bit 随机数） */
 export function generateStrongSyncKey(): string {
-  let uuid = '';
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    uuid = crypto.randomUUID();
-  } else {
-    // 兼容回退
-    const bytes = new Uint8Array(16);
-    if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
-      crypto.getRandomValues(bytes);
-    } else {
-      for (let i = 0; i < 16; i++) bytes[i] = Math.floor(Math.random() * 256);
-    }
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    const hex = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
-    uuid = `${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20)}`;
-  }
-  return `sync-${uuid}`;
+  return `sync-${crypto.randomUUID()}`;
 }
 
-/**
- * Uint8Array 转 Base64 字符串 (分块处理，兼容超大缓冲区)
- */
-function bufferToBase64(bytes: Uint8Array): string {
+function bytesToBase64(bytes: Uint8Array): string {
   const chunkSize = 0x8000;
   let binary = '';
   for (let i = 0; i < bytes.length; i += chunkSize) {
-    const chunk = bytes.subarray(i, i + chunkSize);
-    binary += String.fromCharCode.apply(null, chunk as unknown as number[]);
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
   }
   return btoa(binary);
 }
 
-/**
- * Base64 字符串转 Uint8Array
- */
-function base64ToBuffer(base64: string): Uint8Array {
+function base64ToBytes(base64: string): Uint8Array<ArrayBuffer> {
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   return bytes;
 }
 
-/**
- * 通过口令基于 PBKDF2 派生 AES-GCM 256-bit 密钥
- */
-async function deriveKey(syncKey: string): Promise<CryptoKey> {
-  const enc = new TextEncoder();
-  const keyMaterial = await crypto.subtle.importKey(
-    'raw',
-    enc.encode(syncKey.trim()),
-    { name: 'PBKDF2' },
-    false,
-    ['deriveKey']
-  );
+function bytesToHex(bytes: Uint8Array): string {
+  return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+}
 
-  return await crypto.subtle.deriveKey(
-    {
-      name: 'PBKDF2',
-      salt: E2EE_SALT,
-      iterations: PBKDF2_ITERATIONS,
-      hash: 'SHA-256',
-    },
-    keyMaterial,
+export async function sha256Hex(text: string): Promise<string> {
+  return bytesToHex(new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode(text))));
+}
+
+const keyCache = new Map<string, Promise<SyncKeys>>();
+
+async function deriveSyncKeysUncached(syncKey: string): Promise<SyncKeys> {
+  const passwordKey = await crypto.subtle.importKey('raw', encoder.encode(syncKey), 'PBKDF2', false, ['deriveBits']);
+  const masterBits = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', salt: encoder.encode(V2_SALT), iterations: V2_ITERATIONS, hash: 'SHA-256' },
+    passwordKey,
+    256
+  );
+  const hkdfKey = await crypto.subtle.importKey('raw', masterBits, 'HKDF', false, ['deriveBits', 'deriveKey']);
+  const hkdfParams = (info: string): HkdfParams => ({
+    name: 'HKDF',
+    hash: 'SHA-256',
+    salt: new Uint8Array(0),
+    info: encoder.encode(info),
+  });
+
+  const authBits = await crypto.subtle.deriveBits(hkdfParams('auth-v2'), hkdfKey, 256);
+  const encKey = await crypto.subtle.deriveKey(
+    hkdfParams('enc-v2'),
+    hkdfKey,
     { name: 'AES-GCM', length: 256 },
     false,
     ['encrypt', 'decrypt']
   );
+  return { authToken: bytesToHex(new Uint8Array(authBits)), encKey };
 }
 
-/**
- * 端到端加密任意数据对象或字符串
- * 输出格式: e2ee:v1:<base64-iv>:<base64-ciphertext>
- */
-export async function encryptE2EE(data: any, syncKey: string): Promise<string> {
-  if (!isStrongSyncKey(syncKey)) {
-    throw new Error('口令强度不足，无法执行端到端加密');
+/** 由口令派生同步凭证与加密密钥（PBKDF2 较慢，按口令缓存） */
+export function deriveSyncKeys(syncKey: string): Promise<SyncKeys> {
+  const normalized = syncKey.trim();
+  if (!isStrongSyncKey(normalized)) {
+    return Promise.reject(new Error('同步口令需为 16–128 个字符'));
   }
+  let cached = keyCache.get(normalized);
+  if (!cached) {
+    cached = deriveSyncKeysUncached(normalized);
+    cached.catch(() => keyCache.delete(normalized));
+    keyCache.set(normalized, cached);
+  }
+  return cached;
+}
 
-  const plaintext = typeof data === 'string' ? data : JSON.stringify(data);
-  const key = await deriveKey(syncKey);
+/** 加密任意可 JSON 序列化的数据，输出 e2ee:v2:<iv>:<ciphertext> */
+export async function encryptV2(data: unknown, encKey: CryptoKey, aad: string): Promise<string> {
   const iv = crypto.getRandomValues(new Uint8Array(12));
-  const encoded = new TextEncoder().encode(plaintext);
-
   const ciphertext = await crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv: iv as unknown as BufferSource },
-    key,
-    encoded as unknown as BufferSource
+    { name: 'AES-GCM', iv, additionalData: encoder.encode(aad) },
+    encKey,
+    encoder.encode(JSON.stringify(data))
   );
+  return `${E2EE_V2_PREFIX}${bytesToBase64(iv)}:${bytesToBase64(new Uint8Array(ciphertext))}`;
+}
 
-  const ivB64 = bufferToBase64(iv);
-  const cipherB64 = bufferToBase64(new Uint8Array(ciphertext));
-
-  return `${E2EE_PREFIX}${ivB64}:${cipherB64}`;
+/** 解密 v2 密文；格式错误、口令不匹配或附加数据不符时抛出异常 */
+export async function decryptV2<T>(raw: string, encKey: CryptoKey, aad: string): Promise<T> {
+  if (!raw.startsWith(E2EE_V2_PREFIX)) throw new Error('不是 v2 密文');
+  const body = raw.slice(E2EE_V2_PREFIX.length);
+  const sep = body.indexOf(':');
+  if (sep === -1) throw new Error('密文格式错误');
+  const plaintext = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: base64ToBytes(body.slice(0, sep)), additionalData: encoder.encode(aad) },
+    encKey,
+    base64ToBytes(body.slice(sep + 1))
+  );
+  return JSON.parse(decoder.decode(plaintext)) as T;
 }
 
 /**
- * 端到端解密数据
- * 具有向下兼容性：若传入未加密的 JSON 字符串或对象，自动安全回退返回
+ * 读取旧版（v1）云端字段：可能是 e2ee:v1 密文、明文 JSON 字符串或已解析对象。
+ * 解密失败返回 null。
  */
-export async function decryptE2EE(raw: any, syncKey: string): Promise<any> {
-  if (raw === null || raw === undefined) return raw;
-
-  // 如果已经不是字符串，直接返回
-  if (typeof raw !== 'string') return raw;
-
-  // 如果不是 E2EE 加密格式，尝试按原有明文 JSON 解析
-  if (!raw.startsWith(E2EE_PREFIX)) {
+export async function decryptLegacyV1(raw: unknown, syncKey: string): Promise<unknown> {
+  if (raw === null || raw === undefined || typeof raw !== 'string') return raw ?? null;
+  if (!raw.startsWith(E2EE_V1_PREFIX)) {
     try {
       return JSON.parse(raw);
     } catch {
-      return raw;
+      return null;
     }
   }
-
-  if (!isStrongSyncKey(syncKey)) {
-    console.warn('缺少有效同步口令，无法解密 E2EE 密文');
-    return null;
-  }
-
   try {
-    const content = raw.substring(E2EE_PREFIX.length);
-    const colonIndex = content.indexOf(':');
-    if (colonIndex === -1) {
-      throw new Error('E2EE 密文格式畸形');
-    }
-
-    const ivB64 = content.substring(0, colonIndex);
-    const cipherB64 = content.substring(colonIndex + 1);
-
-    const iv = base64ToBuffer(ivB64);
-    const ciphertext = base64ToBuffer(cipherB64);
-    const key = await deriveKey(syncKey);
-
-    const decrypted = await crypto.subtle.decrypt(
-      { name: 'AES-GCM', iv: iv as unknown as BufferSource },
-      key,
-      ciphertext as unknown as BufferSource
+    const body = raw.slice(E2EE_V1_PREFIX.length);
+    const sep = body.indexOf(':');
+    if (sep === -1) return null;
+    const passwordKey = await crypto.subtle.importKey('raw', encoder.encode(syncKey.trim()), 'PBKDF2', false, ['deriveKey']);
+    const key = await crypto.subtle.deriveKey(
+      { name: 'PBKDF2', salt: encoder.encode(V1_SALT), iterations: V1_ITERATIONS, hash: 'SHA-256' },
+      passwordKey,
+      { name: 'AES-GCM', length: 256 },
+      false,
+      ['decrypt']
     );
-
-    const decoded = new TextDecoder().decode(decrypted);
-    try {
-      return JSON.parse(decoded);
-    } catch {
-      return decoded;
-    }
+    const plaintext = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: base64ToBytes(body.slice(0, sep)) },
+      key,
+      base64ToBytes(body.slice(sep + 1))
+    );
+    return JSON.parse(decoder.decode(plaintext));
   } catch (err) {
-    console.error('E2EE 解密失败（口令可能不匹配或数据损坏）:', err);
+    console.error('旧版同步数据解密失败（口令可能不匹配或数据损坏）:', err);
     return null;
   }
 }

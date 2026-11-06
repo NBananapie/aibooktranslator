@@ -1,28 +1,31 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useEffectEvent } from 'react';
 import { useRouter } from 'next/navigation';
+import type { PDFDocumentProxy } from 'pdfjs-dist';
 import {
   getHistoryRecord,
-  saveHistoryRecord,
+  getPdfData,
   HistoryRecord,
   updateHistoryFilename,
   updateHistoryProgress,
+  updateHistoryRecord,
   calculatePdfFingerprint,
 } from '@/lib/db';
 
 export interface UsePdfDocumentOptions {
-  activeFileId: string | null;
-  onRecordLoaded?: (record: HistoryRecord) => void;
+  fileId: string | null;
+  /** 文件名或阅读进度写入本地后回调（用于安排云端同步） */
+  onMetaChanged?: () => void;
 }
 
 export function usePdfDocument(options: UsePdfDocumentOptions) {
-  const { activeFileId, onRecordLoaded } = options;
+  const { fileId, onMetaChanged } = options;
   const router = useRouter();
 
   const [dbRecord, setDbRecord] = useState<HistoryRecord | null>(null);
   const [file, setFile] = useState<File | null>(null);
-  const [pdfDocument, setPdfDocument] = useState<any>(null);
+  const [pdfDocument, setPdfDocument] = useState<PDFDocumentProxy | null>(null);
   const [numPages, setNumPages] = useState<number>(0);
   const [pageNumber, setPageNumber] = useState<number>(1);
   const [resumePrompt, setResumePrompt] = useState<{ page: number; totalPages?: number } | null>(null);
@@ -43,64 +46,83 @@ export function usePdfDocument(options: UsePdfDocumentOptions) {
   const leftPaneRef = useRef<HTMLDivElement>(null);
   const pdfWrapperRef = useRef<HTMLDivElement>(null);
 
-  // 1. 初始化从 IndexedDB 加载文档记录并检测断点续读
+  /** 打开文档后用户是否翻过页；未翻页前不写入进度，避免把已保存的进度覆盖为第 1 页 */
+  const hasNavigatedRef = useRef(false);
+
+  const notifyMetaChanged = useEffectEvent(() => onMetaChanged?.());
+
+  // 1. 从 IndexedDB 加载文档记录与 PDF 文件，并检测断点续读
   useEffect(() => {
-    if (!activeFileId) return;
-    getHistoryRecord(activeFileId).then(async record => {
-      if (record) {
-        if (!record.fingerprint && record.pdfData) {
-          try {
-            record.fingerprint = await calculatePdfFingerprint(record.pdfData);
-            await saveHistoryRecord(record);
-          } catch (e) {
-            console.error('Calculate fingerprint error', e);
-          }
-        }
-        setDbRecord(record);
-        setFile(new File([record.pdfData], record.filename, { type: 'application/pdf' }));
-        setEditTitleValue(record.filename);
+    if (!fileId) return;
+    let cancelled = false;
+    hasNavigatedRef.current = false;
 
-        // 断点续读：若记录存在大于 1 的阅读页码，触发立即跳转提示横幅
-        const savedPage = record.lastReadPage && record.lastReadPage > 1 ? record.lastReadPage : 1;
-        setPageNumber(1);
-        if (savedPage > 1) {
-          setResumePrompt({ page: savedPage, totalPages: record.totalPages });
-        }
-
-        if (onRecordLoaded) {
-          onRecordLoaded(record);
-        }
-      } else {
-        router.push('/');
+    (async () => {
+      const [record, pdfData] = await Promise.all([getHistoryRecord(fileId), getPdfData(fileId)]);
+      if (cancelled) return;
+      if (!record || !pdfData) {
+        router.replace('/');
+        return;
       }
-    });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeFileId, router]);
+      let loaded = record;
+      if (!loaded.fingerprint) {
+        try {
+          const fingerprint = await calculatePdfFingerprint(pdfData);
+          loaded = (await updateHistoryRecord(fileId, r => ({ ...r, fingerprint }))) ?? loaded;
+        } catch (e) {
+          console.error('Calculate fingerprint error', e);
+        }
+      }
+      // 记录打开时间（不改变阅读进度）
+      loaded = (await updateHistoryProgress(fileId, { lastReadTime: Date.now() })) ?? loaded;
+      if (cancelled) return;
 
-  // 实时持久化保存当前阅读进度，杜绝退出后进度丢失
+      setDbRecord(loaded);
+      setFile(new File([pdfData], loaded.filename, { type: 'application/pdf' }));
+      setEditTitleValue(loaded.filename);
+      setPageNumber(1);
+      if (loaded.lastReadPage && loaded.lastReadPage > 1) {
+        setResumePrompt({ page: loaded.lastReadPage, totalPages: loaded.totalPages });
+      }
+    })().catch(err => console.error('加载文档失败', err));
+
+    return () => {
+      cancelled = true;
+    };
+  }, [fileId, router]);
+
+  // 2. 用户翻页后持久化阅读进度
   useEffect(() => {
-    if (!activeFileId || !pageNumber || pageNumber < 1) return;
+    if (!fileId || pageNumber < 1) return;
+    if (!hasNavigatedRef.current) {
+      if (pageNumber === 1) return;
+      hasNavigatedRef.current = true;
+    }
     const timer = setTimeout(() => {
-      updateHistoryProgress(activeFileId, {
-        lastReadPage: pageNumber,
-        lastReadTime: Date.now(),
-      }).catch(console.error);
-      setDbRecord(prev => (prev ? { ...prev, lastReadPage: pageNumber, lastReadTime: Date.now() } : prev));
+      const now = Date.now();
+      updateHistoryProgress(fileId, { lastReadPage: pageNumber, lastReadTime: now })
+        .then(updated => {
+          if (!updated) return;
+          setDbRecord(prev =>
+            prev && prev.id === updated.id
+              ? { ...prev, lastReadPage: updated.lastReadPage, lastReadTime: updated.lastReadTime, metaUpdatedAt: updated.metaUpdatedAt }
+              : prev
+          );
+          notifyMetaChanged();
+        })
+        .catch(console.error);
     }, 300);
     return () => clearTimeout(timer);
-  }, [activeFileId, pageNumber]);
+  }, [fileId, pageNumber]);
 
-  // 2. 自适应动态监听左侧容器宽度，杜绝滚动条震荡造成的死循环
+  // 3. 监听左侧容器宽度
   useEffect(() => {
     const targetEl = leftPaneRef.current || containerRef.current;
     if (!targetEl) return;
 
     const updateWidth = () => {
-      if (targetEl) {
-        const containerW = targetEl.clientWidth;
-        const calculatedWidth = Math.max(280, containerW - 48);
-        setPdfRenderWidth(prev => (Math.abs(prev - calculatedWidth) > 10 ? calculatedWidth : prev));
-      }
+      const calculatedWidth = Math.max(280, targetEl.clientWidth - 48);
+      setPdfRenderWidth(prev => (Math.abs(prev - calculatedWidth) > 10 ? calculatedWidth : prev));
     };
     updateWidth();
     const observer = new ResizeObserver(updateWidth);
@@ -108,30 +130,35 @@ export function usePdfDocument(options: UsePdfDocumentOptions) {
     return () => observer.disconnect();
   }, [leftPaneWidth, isImmersive]);
 
-  // 3. 文档成功加载回调
-  const onDocumentLoadSuccess = (pdf: any) => {
+  // 4. 文档加载完成：记录总页数
+  const onDocumentLoadSuccess = (pdf: PDFDocumentProxy) => {
     setPdfDocument(pdf);
-    const pages = pdf?.numPages || 0;
+    const pages = pdf.numPages || 0;
     setNumPages(pages);
-    setDbRecord((prev: any) => (prev ? { ...prev, totalPages: pages } : prev));
-    if (activeFileId) {
-      updateHistoryProgress(activeFileId, {
-        totalPages: pages,
-        lastReadPage: pageNumber,
-        lastReadTime: Date.now(),
-      }).catch(console.error);
+    setDbRecord(prev => (prev ? { ...prev, totalPages: pages } : prev));
+    if (fileId) {
+      updateHistoryProgress(fileId, { totalPages: pages }).catch(console.error);
     }
   };
 
-  // 4. 分页导航与边界约束
+  // 5. 分页导航与边界约束
   const changePage = useCallback(
     (offset: number) => {
+      hasNavigatedRef.current = true;
       setPageNumber(prev => Math.min(Math.max(1, prev + offset), numPages || 1));
     },
     [numPages]
   );
 
-  // 5. 键盘翻页快捷键
+  const goToPage = useCallback(
+    (page: number) => {
+      hasNavigatedRef.current = true;
+      setPageNumber(Math.min(Math.max(1, page), numPages || page));
+    },
+    [numPages]
+  );
+
+  // 6. 键盘翻页快捷键
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement).tagName)) return;
@@ -147,7 +174,7 @@ export function usePdfDocument(options: UsePdfDocumentOptions) {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [changePage]);
 
-  // 6. 分栏拖拽改变宽度
+  // 7. 分栏拖拽改变宽度
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
       if (!isResizing || !containerRef.current) return;
@@ -176,9 +203,9 @@ export function usePdfDocument(options: UsePdfDocumentOptions) {
     };
   }, [isResizing]);
 
-  // 7. 保存修改后的文件名
+  // 8. 保存修改后的文件名
   const handleSaveTitle = async () => {
-    if (!editTitleValue.trim() || !activeFileId || !dbRecord) {
+    if (!editTitleValue.trim() || !fileId || !dbRecord) {
       setIsEditingTitle(false);
       return;
     }
@@ -186,14 +213,16 @@ export function usePdfDocument(options: UsePdfDocumentOptions) {
     if (!newName.toLowerCase().endsWith('.pdf')) {
       newName += '.pdf';
     }
-    const updatedRecord = { ...dbRecord, filename: newName };
-    setDbRecord(updatedRecord);
-    setFile(new File([updatedRecord.pdfData], newName, { type: 'application/pdf' }));
-    await updateHistoryFilename(activeFileId, newName);
+    const updated = await updateHistoryFilename(fileId, newName);
+    if (updated) {
+      setDbRecord(prev => (prev ? { ...prev, filename: updated.filename, metaUpdatedAt: updated.metaUpdatedAt } : prev));
+      if (file) setFile(new File([file], newName, { type: 'application/pdf' }));
+      onMetaChanged?.();
+    }
     setIsEditingTitle(false);
   };
 
-  // 8. 缩放控制辅助函数
+  // 9. 缩放控制
   const zoomIn = () => setZoomScale(s => Math.min(2.0, s + 0.15));
   const zoomOut = () => setZoomScale(s => Math.max(0.6, s - 0.15));
   const resetZoom = () => setZoomScale(1.0);
@@ -203,13 +232,11 @@ export function usePdfDocument(options: UsePdfDocumentOptions) {
     dbRecord,
     setDbRecord,
     file,
-    setFile,
     pdfDocument,
     numPages,
-    setNumPages,
     pageNumber,
-    setPageNumber,
     changePage,
+    goToPage,
     isEditingTitle,
     setIsEditingTitle,
     editTitleValue,
@@ -218,13 +245,11 @@ export function usePdfDocument(options: UsePdfDocumentOptions) {
     leftPaneWidth,
     setLeftPaneWidth,
     isImmersive,
-    setIsImmersive,
     toggleImmersive,
     isResizing,
     setIsResizing,
     pdfRenderWidth,
     zoomScale,
-    setZoomScale,
     zoomIn,
     zoomOut,
     resetZoom,

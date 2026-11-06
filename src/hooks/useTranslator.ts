@@ -1,448 +1,315 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo, useEffectEvent } from 'react';
 import { pdfjs } from 'react-pdf';
+import type { PDFDocumentProxy } from 'pdfjs-dist';
+import type { TextItem } from 'pdfjs-dist/types/src/display/api';
 import { AppSettings } from '@/context/AppContext';
-import { HistoryRecord, saveHistoryRecord, getHistoryRecord } from '@/lib/db';
+import { HistoryRecord, setPageTranslation } from '@/lib/db';
 import { executeTranslateStream } from '@/lib/llmClient';
-import {
-  extractPdfTextWithHierarchy,
-  parseTranslationOutput,
-  formatSourceBlocksForPrompt,
-  parseBlockTranslation,
-  TargetBlock,
-  BilingualMapEntry,
-} from '@/services/alignmentEngine';
-import { analyzePageLayout, SourceBlock } from '@/services/layoutAnalysisEngine';
-import { pushBookToCloud } from '@/services/cloudSyncService';
+import { consumeTextStream, readErrorResponse } from '@/lib/llm/protocol';
+import { extractPdfTextWithHierarchy, parseTranslationOutput } from '@/services/alignmentEngine';
+import { analyzePageLayout } from '@/services/layoutAnalysisEngine';
+import { schedulePush } from '@/services/cloudSyncService';
 
 export interface UseTranslatorOptions {
   file: File | null;
-  pdfDocument?: any;
+  pdfDocument?: PDFDocumentProxy | null;
   pageNumber: number;
   numPages: number;
   settings: AppSettings;
-  activeFileId: string | null;
   dbRecord: HistoryRecord | null;
   setDbRecord: React.Dispatch<React.SetStateAction<HistoryRecord | null>>;
-  onBilingualMapExtracted?: (page: number, map: BilingualMapEntry[]) => void;
-  sourceBlocks?: SourceBlock[];
+}
+
+interface StreamState {
+  page: number;
+  text: string;
+  thinking: boolean;
+}
+
+interface PageMessage {
+  page: number;
+  text: string;
+}
+
+/** 上一页结尾作为跨页上下文的最大字符数 */
+const PREVIOUS_TAIL_CHARS = 400;
+const NO_TEXT_NOTICE =
+  '*(当前页面未检测到原生文本内容。若本页为扫描件或图表，可点击上方顶栏中的「百度飞桨 OCR」按钮进行高精度结构化识别)*';
+
+function isAbortError(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { name?: unknown }).name === 'AbortError';
+}
+
+function isTextItem(item: unknown): item is TextItem {
+  return typeof item === 'object' && item !== null && 'str' in item;
+}
+
+/** 提取单页原文：优先使用版面分析得到的段落块，失败时退回按字号分级的纯文本 */
+async function extractPageText(doc: PDFDocumentProxy, page: number): Promise<string> {
+  const pdfPage = await doc.getPage(page);
+  const textContent = await pdfPage.getTextContent();
+  const items = textContent.items.filter(isTextItem);
+  const blocks = analyzePageLayout(items, pdfPage.view, page);
+  return blocks.length > 0 ? blocks.map(b => b.text).join('\n\n') : extractPdfTextWithHierarchy(items);
+}
+
+/** 上一页末尾的一段文字，从单词边界开始截取 */
+async function getPreviousPageTail(doc: PDFDocumentProxy, page: number): Promise<string> {
+  if (page <= 1) return '';
+  const text = (await extractPageText(doc, page - 1)).trim();
+  if (text.length <= PREVIOUS_TAIL_CHARS) return text;
+  const tail = text.slice(-PREVIOUS_TAIL_CHARS);
+  const firstSpace = tail.indexOf(' ');
+  return firstSpace > 0 ? tail.slice(firstSpace + 1) : tail;
 }
 
 export function useTranslator(options: UseTranslatorOptions) {
-  const {
-    file,
-    pdfDocument,
-    pageNumber,
-    numPages,
-    settings,
-    dbRecord,
-    setDbRecord,
-    onBilingualMapExtracted,
-    sourceBlocks = [],
-  } = options;
+  const { file, pdfDocument, pageNumber, numPages, settings, dbRecord, setDbRecord } = options;
 
-  const [translatedText, setTranslatedText] = useState<string>('');
-  const [displayedText, setDisplayedText] = useState<string>('');
-  const [targetBlocks, setTargetBlocks] = useState<TargetBlock[]>([]);
-  const fullTextRef = useRef<string>('');
-  const [isTranslating, setIsTranslating] = useState<boolean>(false);
-  const [error, setError] = useState<string>('');
+  const [stream, setStream] = useState<StreamState | null>(null);
+  const [translatingPage, setTranslatingPage] = useState<number | null>(null);
+  const [notice, setNotice] = useState<PageMessage | null>(null);
+  const [pageError, setPageError] = useState<PageMessage | null>(null);
   const [autoTranslate, setAutoTranslate] = useState<boolean>(false);
   const [isPreTranslating, setIsPreTranslating] = useState<boolean>(false);
   const [preloadProgress, setPreloadProgress] = useState<{ total: number; done: number }>({ total: 0, done: 0 });
-  const [translationCache, setTranslationCache] = useState<Record<number, string>>({});
 
-  const translationCacheRef = useRef<Record<number, string>>({});
-  const isPreTranslatingRef = useRef<boolean>(false);
+  const translationCache = useMemo(() => dbRecord?.translations ?? {}, [dbRecord?.translations]);
+  const translationCacheRef = useRef<Record<number, string>>(translationCache);
   const currentPageRef = useRef<number>(pageNumber);
   const abortControllerRef = useRef<AbortController | null>(null);
-  const lastParsedRawRef = useRef<string>('');
-  const cloudSyncTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const preloadAbortRef = useRef<AbortController | null>(null);
+  const recordId = dbRecord?.id;
 
-  // 1. 平滑打字机动画调度器
-  useEffect(() => {
-    let rafId: number | null = null;
-    let isCancelled = false;
-
-    const tick = () => {
-      if (isCancelled) return;
-      const { cleanMarkdown } = parseTranslationOutput(fullTextRef.current);
-      let needsNextFrame = isTranslating;
-
-      setDisplayedText(prev => {
-        if (prev.length < cleanMarkdown.length) {
-          needsNextFrame = true;
-          const diff = cleanMarkdown.length - prev.length;
-          const charsToAdd = Math.max(1, Math.ceil(diff / 4));
-          return prev + cleanMarkdown.slice(prev.length, prev.length + charsToAdd);
-        }
-        return prev;
-      });
-
-      if (needsNextFrame || isTranslating) {
-        rafId = requestAnimationFrame(tick);
-      } else {
-        rafId = null;
-      }
-    };
-
-    rafId = requestAnimationFrame(tick);
-    return () => {
-      isCancelled = true;
-      if (rafId) cancelAnimationFrame(rafId);
-    };
-  }, [isTranslating]);
-
-  // 1. 初始化从 dbRecord 同步已有翻译缓存
-  useEffect(() => {
-    if (dbRecord?.translations && Object.keys(dbRecord.translations).length > 0) {
-      setTranslationCache(prev => ({
-        ...dbRecord.translations,
-        ...prev,
-      }));
-    }
-  }, [dbRecord?.id]);
-
-  // 2. 页面切换时，同步当前页引用、重置或回显翻译内容
-  useEffect(() => {
-    currentPageRef.current = pageNumber;
-    lastParsedRawRef.current = '';
-
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-      abortControllerRef.current = null;
-    }
-
-    const cached = translationCache[pageNumber] || dbRecord?.translations?.[pageNumber];
-    if (cached) {
-      const raw = cached;
-      fullTextRef.current = raw;
-      lastParsedRawRef.current = raw;
-      const { cleanMarkdown } = parseTranslationOutput(raw);
-      setTargetBlocks([]);
-      setTranslatedText(cleanMarkdown);
-      setDisplayedText(cleanMarkdown);
-    } else {
-      fullTextRef.current = '';
-      setTranslatedText('');
-      setDisplayedText('');
-      setTargetBlocks([]);
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pageNumber, translationCache]);
-
-  // 3. 持久化 translationCache 到 IndexedDB（合并数据库中最新状态，严防覆盖剪藏与最新进度）
   useEffect(() => {
     translationCacheRef.current = translationCache;
-    if (dbRecord && Object.keys(translationCache).length > 0) {
-      getHistoryRecord(dbRecord.id).then(latestRecord => {
-        const base = latestRecord || dbRecord;
-        const updatedRecord = {
-          ...base,
-          translations: translationCache,
-          totalPages: base.totalPages || numPages || 0,
-        };
-        setDbRecord(updatedRecord);
-        saveHistoryRecord(updatedRecord).catch(e => console.error('Save history error', e));
+  }, [translationCache]);
 
-        // 自动静默增量同步至 Cloudflare D1
-        if (settings?.syncKey?.trim() && settings?.autoCloudSync !== false && updatedRecord.fingerprint) {
-          if (cloudSyncTimerRef.current) clearTimeout(cloudSyncTimerRef.current);
-          cloudSyncTimerRef.current = setTimeout(() => {
-            pushBookToCloud(updatedRecord, settings.syncKey!).catch(err =>
-              console.error('Auto cloud sync error', err)
-            );
-          }, 1200);
-        }
-      });
-    }
-  }, [translationCache, numPages, settings?.syncKey, settings?.autoCloudSync]);
+  // 翻页时取消进行中的当前页翻译
+  useEffect(() => {
+    currentPageRef.current = pageNumber;
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+  }, [pageNumber]);
 
-  // 4. 执行翻译文本流
-  const executeTranslateText = async (sourceText: string, targetPage: number) => {
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
+  // 切换文档或卸载时取消所有请求
+  useEffect(() => {
+    return () => {
+      abortControllerRef.current?.abort();
+      preloadAbortRef.current?.abort();
+    };
+  }, [recordId]);
 
-    setIsTranslating(true);
-    setError('');
-    setTranslatedText('');
-    fullTextRef.current = '';
-    setDisplayedText('');
+  const getPdfDoc = useCallback(async (): Promise<PDFDocumentProxy | null> => {
+    if (pdfDocument) return pdfDocument;
+    if (!file) return null;
+    return pdfjs.getDocument({ data: await file.arrayBuffer() }).promise;
+  }, [pdfDocument, file]);
 
-    try {
+  /** 写入本地数据库、更新内存状态，并安排云端增量同步 */
+  const persistTranslation = useCallback(
+    async (page: number, text: string) => {
+      if (!recordId) return;
+      const updated = await setPageTranslation(recordId, page, text);
+      if (!updated) return;
+      setDbRecord(prev =>
+        prev && prev.id === updated.id
+          ? { ...prev, translations: updated.translations, translationTimes: updated.translationTimes }
+          : prev
+      );
+      if (settings.syncKey?.trim() && settings.autoCloudSync !== false) {
+        schedulePush(recordId, settings.syncKey);
+      }
+    },
+    [recordId, setDbRecord, settings.syncKey, settings.autoCloudSync]
+  );
+
+  /** 请求模型翻译一段文本，返回清洗后的 Markdown */
+  const requestTranslation = useCallback(
+    async (
+      text: string,
+      previousPageTail: string,
+      signal: AbortSignal,
+      onStream?: (raw: string) => void
+    ): Promise<string> => {
       const response = await executeTranslateStream({
-        text: sourceText,
-        targetLanguage: '中文',
+        text,
+        previousPageTail,
         apiKey: settings.apiKey,
         baseUrl: settings.baseUrl,
         model: settings.model,
         provider: settings.provider,
         customPrompt: settings.customPrompt,
-        signal: controller.signal,
+        signal,
       });
-
       if (!response.ok) {
-        const errorText = await response.text().catch(() => 'Unknown error');
-        let errorMessage = '翻译请求失败';
-        try {
-          const errorData = JSON.parse(errorText);
-          errorMessage = errorData.error || errorMessage;
-        } catch {
-          errorMessage = `HTTP ${response.status}: ${errorText.slice(0, 150)}`;
-        }
-        throw new Error(errorMessage);
+        throw new Error(await readErrorResponse(response, '翻译请求失败'));
       }
-      if (!response.body) throw new Error('当前浏览器不支持 ReadableStream。');
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder('utf-8');
-      let done = false;
-      let currentRawText = '';
-
-      while (!done) {
-        const { value, done: readerDone } = await reader.read();
-        done = readerDone;
-        if (value) {
-          const chunk = decoder.decode(value, { stream: true });
-          currentRawText += chunk;
-          if (currentPageRef.current === targetPage) {
-            fullTextRef.current = currentRawText;
-            // 实时过滤思考标签并进行流式渲染，呈现打字机逐字输出效果
-            const streamDisplay = currentRawText
-              .replace(/<think>[\s\S]*?(<\/think>|$)/g, '')
-              .replace(/<!--\s*BILINGUAL_MAP[\s\S]*$/i, '')
-              .trim();
-            if (streamDisplay) {
-              setDisplayedText(streamDisplay);
-            }
-          }
-        }
-      }
-
-      // 流式接收完毕后，清洗最终文本并写入缓存
-      const finalClean = currentRawText
-        .replace(/<think>[\s\S]*?(<\/think>|$)/g, '')
-        .replace(/<!--\s*BILINGUAL_MAP[\s\S]*$/i, '')
-        .trim();
-
-      if (currentPageRef.current === targetPage) {
-        setTargetBlocks([]);
-        setTranslatedText(finalClean);
-        setDisplayedText(finalClean);
-      }
-      setTranslationCache(prev => ({ ...prev, [targetPage]: finalClean }));
-    } catch (err: any) {
-      if (err.name === 'AbortError') return;
-      console.error(err);
-      setError(err.message || '翻译过程中出现异常。');
-    } finally {
-      setIsTranslating(false);
-    }
-  };
-
-  // 共享文档实例获取辅助函数 (优先复用共享单例，杜绝重复解析)
-  const getPdfDoc = async () => {
-    if (pdfDocument) return pdfDocument;
-    if (!file) return null;
-    const arrayBuffer = await file.arrayBuffer();
-    return await pdfjs.getDocument({ data: arrayBuffer }).promise;
-  };
-
-  // 5. 触发当前页翻译
-  const translateCurrentPage = useCallback(
-    async (force = false) => {
-      if (!file) return;
-      if (!force && translationCacheRef.current[pageNumber]) return;
-
-      setIsTranslating(true);
-      setError('');
-      setTranslatedText('');
-      fullTextRef.current = '';
-      setDisplayedText('');
-      setTargetBlocks([]);
-
-      try {
-        let promptText = '';
-        if (sourceBlocks && sourceBlocks.length > 0) {
-          promptText = sourceBlocks.map(b => b.text).join('\n\n');
-        } else {
-          const doc = await getPdfDoc();
-          if (!doc) {
-            setIsTranslating(false);
-            return;
-          }
-          const page = await doc.getPage(pageNumber);
-          const textContent = await page.getTextContent();
-          promptText = extractPdfTextWithHierarchy(textContent.items as any[]);
-        }
-
-        // 若当前页无原生提取文本 (如封面、插图或空白页)：优雅占位提示，严禁擅自后台调用 OCR
-        if (!promptText.trim()) {
-          setIsTranslating(false);
-          const msg =
-            '*(当前页面未检测到原生文本内容。若本页为扫描件或图表，可点击上方顶栏中的「百度飞桨 OCR」按钮进行高精度结构化识别)*';
-          setTranslatedText(msg);
-          fullTextRef.current = msg;
-          setDisplayedText(msg);
-          setTargetBlocks([]);
-          return;
-        }
-
-        await executeTranslateText(promptText, pageNumber);
-      } catch (err: any) {
-        if (err.name === 'AbortError') return;
-        console.error(err);
-        setError(err.message || '翻译过程中出现异常。');
-        setIsTranslating(false);
-      }
+      const raw = await consumeTextStream(response, onStream);
+      return parseTranslationOutput(raw).cleanMarkdown;
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [file, pdfDocument, pageNumber, sourceBlocks, executeTranslateText]
+    [settings.apiKey, settings.baseUrl, settings.model, settings.provider, settings.customPrompt]
   );
 
-  // 6. 静默流水线预加载：后台平滑预翻译后续多页 (当前页+1, 当前页+2)
+  /** 翻译指定文本并作为某页译文保存（也用于 OCR 结果翻译） */
+  const executeTranslateText = useCallback(
+    async (sourceText: string, targetPage: number, previousPageTail = '') => {
+      abortControllerRef.current?.abort();
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
+
+      setTranslatingPage(targetPage);
+      setPageError(null);
+      setStream({ page: targetPage, text: '', thinking: false });
+
+      try {
+        const clean = await requestTranslation(sourceText, previousPageTail, controller.signal, raw => {
+          if (currentPageRef.current !== targetPage) return;
+          setStream({
+            page: targetPage,
+            text: parseTranslationOutput(raw).cleanMarkdown,
+            thinking: raw.includes('<think>'),
+          });
+        });
+        if (clean) await persistTranslation(targetPage, clean);
+      } catch (err) {
+        if (isAbortError(err)) return;
+        console.error(err);
+        setPageError({ page: targetPage, text: err instanceof Error ? err.message : '翻译过程中出现异常。' });
+      } finally {
+        if (abortControllerRef.current === controller) {
+          abortControllerRef.current = null;
+        }
+        setStream(prev => (prev?.page === targetPage ? null : prev));
+        setTranslatingPage(prev => (prev === targetPage ? null : prev));
+      }
+    },
+    [requestTranslation, persistTranslation]
+  );
+
+  /** 翻译当前页；force 为 true 时忽略已有缓存重新翻译 */
+  const translateCurrentPage = useCallback(
+    async (force = false) => {
+      if (!file && !pdfDocument) return;
+      const targetPage = pageNumber;
+      if (!force && translationCacheRef.current[targetPage]) return;
+
+      setTranslatingPage(targetPage);
+      setPageError(null);
+      try {
+        const doc = await getPdfDoc();
+        if (!doc) return;
+        const text = await extractPageText(doc, targetPage);
+        // 无原生文本（封面、插图、扫描页）：提示使用 OCR，不在后台自动调用
+        if (!text.trim()) {
+          setNotice({ page: targetPage, text: NO_TEXT_NOTICE });
+          return;
+        }
+        const previousTail = await getPreviousPageTail(doc, targetPage);
+        await executeTranslateText(text, targetPage, previousTail);
+      } catch (err) {
+        if (isAbortError(err)) return;
+        console.error(err);
+        setPageError({ page: targetPage, text: err instanceof Error ? err.message : '翻译过程中出现异常。' });
+      } finally {
+        setTranslatingPage(prev => (prev === targetPage && !abortControllerRef.current ? null : prev));
+      }
+    },
+    [file, pdfDocument, pageNumber, getPdfDoc, executeTranslateText]
+  );
+
+  /** 后台预翻译后续页面（跳过已有译文与无文本页面），可被取消 */
   const preTranslatePipeline = useCallback(
     async (startPage: number, maxCount = 2) => {
-      if (!file || isPreTranslatingRef.current) return;
+      if ((!file && !pdfDocument) || preloadAbortRef.current) return;
 
       const pagesToPreload: number[] = [];
       for (let p = startPage + 1; p <= numPages && pagesToPreload.length < maxCount; p++) {
-        if (!translationCacheRef.current[p]) {
-          pagesToPreload.push(p);
-        }
+        if (!translationCacheRef.current[p]) pagesToPreload.push(p);
       }
-
       if (pagesToPreload.length === 0) return;
 
-      isPreTranslatingRef.current = true;
+      const controller = new AbortController();
+      preloadAbortRef.current = controller;
       setIsPreTranslating(true);
       setPreloadProgress({ total: pagesToPreload.length, done: 0 });
 
       try {
         const doc = await getPdfDoc();
         if (!doc) return;
-
         let doneCount = 0;
         for (const targetPage of pagesToPreload) {
-          if (translationCacheRef.current[targetPage]) {
-            doneCount++;
-            setPreloadProgress({ total: pagesToPreload.length, done: doneCount });
-            continue;
-          }
-
+          if (controller.signal.aborted) break;
           try {
-            const page = await doc.getPage(targetPage);
-            const textContent = await page.getTextContent();
-            const pageBlocks = analyzePageLayout(
-              textContent.items as any[],
-              page.view || [0, 0, 600, 800],
-              targetPage
-            );
-            const promptText =
-              pageBlocks.length > 0
-                ? pageBlocks.map(b => b.text).join('\n\n')
-                : extractPdfTextWithHierarchy(textContent.items as any[]);
-
-            // 若后续页无原生文本（空白/纯图片），直接跳过预读，严禁在后台静默跑 OCR
-            if (!promptText.trim()) {
-              doneCount++;
-              setPreloadProgress({ total: pagesToPreload.length, done: doneCount });
-              continue;
-            }
-
-            const response = await executeTranslateStream({
-              text: promptText,
-              targetLanguage: '中文',
-              apiKey: settings.apiKey,
-              baseUrl: settings.baseUrl,
-              model: settings.model,
-              provider: settings.provider,
-              customPrompt: settings.customPrompt,
-            });
-
-            if (response.ok && response.body) {
-              const reader = response.body.getReader();
-              const decoder = new TextDecoder('utf-8');
-              let done = false;
-              let fullNextText = '';
-
-              while (!done) {
-                const { value, done: readerDone } = await reader.read();
-                done = readerDone;
-                if (value) fullNextText += decoder.decode(value, { stream: true });
-              }
-
-              if (fullNextText.trim()) {
-                setTranslationCache(prev => {
-                  const nextCache = { ...prev, [targetPage]: fullNextText };
-                  translationCacheRef.current = nextCache;
-                  return nextCache;
-                });
+            if (!translationCacheRef.current[targetPage]) {
+              const text = await extractPageText(doc, targetPage);
+              if (text.trim()) {
+                const previousTail = await getPreviousPageTail(doc, targetPage);
+                const clean = await requestTranslation(text, previousTail, controller.signal);
+                if (clean) await persistTranslation(targetPage, clean);
               }
             }
           } catch (err) {
-            console.warn(`流水线静默预读第 ${targetPage} 页异常:`, err);
-          } finally {
-            doneCount++;
-            setPreloadProgress({ total: pagesToPreload.length, done: doneCount });
+            if (isAbortError(err)) break;
+            console.warn(`预翻译第 ${targetPage} 页失败:`, err);
           }
+          doneCount++;
+          setPreloadProgress({ total: pagesToPreload.length, done: doneCount });
         }
       } catch (err) {
-        console.error('Pipeline pre-translation error:', err);
+        if (!isAbortError(err)) console.error('Pipeline pre-translation error:', err);
       } finally {
-        isPreTranslatingRef.current = false;
+        if (preloadAbortRef.current === controller) preloadAbortRef.current = null;
         setIsPreTranslating(false);
       }
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [file, pdfDocument, numPages, settings]
+    [file, pdfDocument, numPages, getPdfDoc, requestTranslation, persistTranslation]
   );
 
-  // 7. 自动翻译触发与预翻译连接 (通过 Ref 稳定引用，彻底终结依赖死循环卡顿)
-  const translateCurrentPageRef = useRef(translateCurrentPage);
-  translateCurrentPageRef.current = translateCurrentPage;
-  const preTranslatePipelineRef = useRef(preTranslatePipeline);
-  preTranslatePipelineRef.current = preTranslatePipeline;
+  // 自动翻译：当前页无缓存时延迟翻译，并预翻译后续页面
+  const onAutoTranslatePage = useEffectEvent((page: number) => {
+    if (translationCacheRef.current[page]) {
+      preTranslatePipeline(page);
+      return undefined;
+    }
+    const timer = setTimeout(() => {
+      translateCurrentPage();
+      preTranslatePipeline(page);
+    }, 350);
+    return () => clearTimeout(timer);
+  });
 
   useEffect(() => {
     if (!file || !autoTranslate) return;
-
-    if (translationCacheRef.current[pageNumber]) {
-      preTranslatePipelineRef.current(pageNumber);
-      return;
-    }
-
-    const timer = setTimeout(() => {
-      translateCurrentPageRef.current();
-      preTranslatePipelineRef.current(pageNumber);
-    }, 350);
-
-    return () => clearTimeout(timer);
+    return onAutoTranslatePage(pageNumber);
   }, [file, pageNumber, autoTranslate]);
 
+  const cachedText = translationCache[pageNumber];
+  const displayedText = useMemo(() => {
+    if (stream?.page === pageNumber) return stream.text;
+    if (cachedText) return parseTranslationOutput(cachedText).cleanMarkdown;
+    if (notice?.page === pageNumber) return notice.text;
+    return '';
+  }, [stream, cachedText, notice, pageNumber]);
+
+  const setError = useCallback(
+    (message: string) => setPageError(message ? { page: currentPageRef.current, text: message } : null),
+    []
+  );
+
   return {
-    translatedText,
-    setTranslatedText,
     displayedText,
-    setDisplayedText,
-    targetBlocks,
-    setTargetBlocks,
-    fullTextRef,
-    isTranslating,
-    setIsTranslating,
-    error,
+    isTranslating: translatingPage === pageNumber,
+    isThinking: stream?.page === pageNumber && stream.thinking,
+    error: pageError?.page === pageNumber ? pageError.text : '',
     setError,
     autoTranslate,
     setAutoTranslate,
     isPreTranslating,
     preloadProgress,
     translationCache,
-    setTranslationCache,
-    translationCacheRef,
     executeTranslateText,
     translateCurrentPage,
     preTranslatePipeline,
