@@ -15,11 +15,13 @@ export function triggerBlobDownload(
   mimeType = 'text/markdown;charset=utf-8;'
 ): void {
   const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
-  link.href = URL.createObjectURL(blob);
+  link.href = url;
   link.download = filename;
   link.click();
-  URL.revokeObjectURL(link.href);
+  // 立即释放会导致部分浏览器下载失败，延迟释放
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
 
 /**
@@ -73,7 +75,7 @@ export function exportTranslationsAsMarkdown(params: {
   const targetFilename = `${baseName}_Pages_${minPage}_to_${maxPage}.md`;
 
   const ref = '?utm_source=export&utm_medium=referral&utm_campaign=bilingual_export';
-  mdContent += `> 由 [AI PDF Translator](https://aitranslator.justganit.com/${ref}) 生成 —— 完整双语对照阅读，自带 API Key，内容不上传。\n>\n> 更多工具见 [JustGanIt](https://justganit.com/${ref})\n`;
+  mdContent += `> 由 [AI PDF Translator](https://aitranslator.justganit.com/${ref}) 生成 —— 完整双语对照阅读，可自带 API Key。\n>\n> 更多工具见 [JustGanIt](https://justganit.com/${ref})\n`;
 
   triggerBlobDownload(mdContent, targetFilename);
 }

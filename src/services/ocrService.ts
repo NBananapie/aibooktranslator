@@ -2,6 +2,8 @@
  * 百度飞桨 OCR 图像捕获与异步作业调度服务 (OCR Service)
  */
 
+import type { PDFPageProxy } from 'pdfjs-dist';
+
 export interface OcrRequestParams {
   imageBase64: string;
   apiToken: string;
@@ -12,7 +14,6 @@ export interface OcrRequestParams {
 export interface OcrResult {
   text: string;
   markdown: string;
-  raw?: any;
 }
 
 /**
@@ -20,7 +21,7 @@ export interface OcrResult {
  * 预填纯白底色，杜绝透明背景在部分渲染引擎中变黑导致 OCR 无法识别
  */
 export async function capturePageCanvasAsBase64(
-  page: any,
+  page: PDFPageProxy,
   scale = 2.0
 ): Promise<string> {
   if (!page) throw new Error('PDF 页面对象不存在');
@@ -34,7 +35,7 @@ export async function capturePageCanvasAsBase64(
   context.fillStyle = '#ffffff';
   context.fillRect(0, 0, canvas.width, canvas.height);
 
-  await (page.render as any)({ canvasContext: context, viewport, canvas }).promise;
+  await page.render({ canvasContext: context, viewport, canvas }).promise;
   return canvas.toDataURL('image/png');
 }
 
@@ -46,7 +47,7 @@ export async function requestPaddleOcr(params: OcrRequestParams): Promise<OcrRes
 
   const res = await fetch('/api/ocr', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json; charset=utf-8' },
     body: JSON.stringify({
       image: imageBase64,
       apiToken,
@@ -56,7 +57,7 @@ export async function requestPaddleOcr(params: OcrRequestParams): Promise<OcrRes
   });
 
   const resText = await res.text();
-  let data: any = {};
+  let data: { text?: string; markdown?: string; error?: string; message?: string } = {};
   try {
     data = JSON.parse(resText);
   } catch {
@@ -75,6 +76,5 @@ export async function requestPaddleOcr(params: OcrRequestParams): Promise<OcrRes
   return {
     text: data.text || ocrMarkdown,
     markdown: ocrMarkdown,
-    raw: data.raw,
   };
 }

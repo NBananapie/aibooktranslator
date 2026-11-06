@@ -186,7 +186,6 @@ export function ClipFlightCanvas({
     const cardLeft0 = startX - cardW / 2;
 
     // 烟雾漏斗 S-Curve 轨迹几何控制点
-    const deltaX = targetX - startX;
     const deltaY = targetY - startY;
     const crestY =
       Math.abs(deltaY) < 5
@@ -198,7 +197,7 @@ export function ClipFlightCanvas({
     // 星尘流与落地冲击波
     const stardust: StardustParticle[] = [];
     let shockwave: ShockwaveRing | null = null;
-    let inwardRays: InwardRay[] = [];
+    const inwardRays: InwardRay[] = [];
     let hasTriggeredAbsorb = false;
 
     const render = (now: number) => {

@@ -6,7 +6,6 @@ import { ClipItem } from '@/lib/db';
 import { executeExplainStream } from '@/lib/llmClient';
 import { readErrorResponse } from '@/lib/llm/protocol';
 import { SourceBlock } from '@/services/layoutAnalysisEngine';
-import { TargetBlock } from '@/services/alignmentEngine';
 
 export interface FloatingToolbarState {
   visible: boolean;
@@ -45,13 +44,12 @@ export interface UseTextSelectionOptions {
   settings: AppSettings;
   clips: ClipItem[];
   pageNumber: number;
+  /** 当前页原文段落，用于给划词解释提供所在段落的上下文 */
   sourceBlocks?: SourceBlock[];
-  targetBlocks?: TargetBlock[];
-  // 保留可选回调以兼容调用处，但单向划词中绝不触发跨屏高亮与滚动
-  bilingualMapCache?: Record<number, Array<{ zh: string; en: string }>>;
-  onTriggerHighlightFromZh?: (text: string, contextParagraph?: string, blockId?: string) => void;
-  onTriggerHighlightFromEn?: (text: string, hintBlockId?: string) => void;
-  onClearHighlights?: () => void;
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 /**
@@ -179,34 +177,22 @@ export function useTextSelection(options: UseTextSelectionOptions) {
     });
   }, [clips, pageNumber]);
 
-  // 3. 全局点击与选区折叠监听（防闪退核心机制）
+  // 3. 全局点击与选区折叠监听
   useEffect(() => {
+    /** 浮动工具栏、剪藏标记、弹窗、抽屉以及表单控件内的点击不关闭工具栏（均用 data 属性或元素类型判断） */
+    const PROTECTED_SELECTOR =
+      '[data-interactive-protected="true"], [data-clip-interactive="true"], button, input, textarea';
+
     const handleGlobalMouseUp = (e: MouseEvent) => {
-      const target = e.target instanceof Element ? e.target : (e.target as any)?.parentElement || null;
-      // 若点击在微岛本身、已剪藏文字节点、模态框、按钮或输入框内，坚决不清除微岛
-      if (
-        target && (
-          target.closest('[data-interactive-protected="true"]') ||
-          target.closest('[data-clip-interactive="true"]') ||
-          target.closest('[class*="floatingToolbar"]') ||
-          target.closest('[class*="clipped"]') ||
-          target.closest('[class*="Clipped"]') ||
-          target.closest('[class*="modal"]') ||
-          target.closest('[class*="Drawer"]') ||
-          target.closest('button') ||
-          target.closest('input') ||
-          target.closest('textarea')
-        )
-      ) {
-        return;
-      }
+      const target = e.target instanceof Element ? e.target : e.target instanceof Node ? e.target.parentElement : null;
+      if (target?.closest(PROTECTED_SELECTOR)) return;
 
       // 延迟 80ms 检查选区状态：仅在非剪藏触发的选区真正折叠时关闭浮窗
       if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current);
       dismissTimerRef.current = setTimeout(() => {
         const selection = window.getSelection();
         setFloatingToolbar(prev => {
-          // 如果当前微岛是针对已剪藏条目显示的，且未被显式关闭，保持显示，防闪退
+          // 针对已剪藏条目显示的工具栏保持显示，直到显式关闭
           if (prev?.isClipped) return prev;
           if (!selection || selection.isCollapsed || !selection.toString().trim()) {
             return null;
@@ -216,13 +202,10 @@ export function useTextSelection(options: UseTextSelectionOptions) {
       }, 80);
     };
 
-    // 页面滚动时关闭微岛，避免坐标错位悬空
+    // 页面滚动时关闭工具栏，避免位置错位；弹窗或抽屉内部滚动除外
     const handleScroll = (e: Event) => {
-      const target = e.target as HTMLElement;
-      // 排除模态框或抽屉内部的滚动
-      if (target?.closest?.('[class*="modal"]') || target?.closest?.('[class*="Drawer"]')) {
-        return;
-      }
+      const target = e.target instanceof Element ? e.target : null;
+      if (target?.closest('[data-interactive-protected="true"]')) return;
       setFloatingToolbar(null);
     };
 
@@ -283,9 +266,9 @@ export function useTextSelection(options: UseTextSelectionOptions) {
           setExplainResultText(currentOutput);
         }
       }
-    } catch (err: any) {
+    } catch (err) {
       console.error(err);
-      setExplainResultText(`解析失败: ${err.message || err}`);
+      setExplainResultText(`解析失败: ${errorMessage(err)}`);
     } finally {
       setIsExplainLoading(false);
     }
@@ -336,11 +319,11 @@ export function useTextSelection(options: UseTextSelectionOptions) {
           setExplainHistory([...newHistory, { role: 'assistant', content: aiResponse }]);
         }
       }
-    } catch (err: any) {
+    } catch (err) {
       console.error(err);
       setExplainHistory([
         ...newHistory,
-        { role: 'assistant', content: `追问回答出错: ${err.message || err}` },
+        { role: 'assistant', content: `追问回答出错: ${errorMessage(err)}` },
       ]);
     } finally {
       setIsExplainLoading(false);

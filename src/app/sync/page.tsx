@@ -52,18 +52,16 @@ export default function CloudSyncPage() {
   });
 
   const [cloudBooks, setCloudBooks] = useState<CloudBookMeta[]>([]);
-  const [loadingBooks, setLoadingBooks] = useState<boolean>(false);
+  const [loadingBooks, setLoadingBooks] = useState<boolean>(() => isStrongSyncKey(settings.syncKey));
   const [deletingHash, setDeletingHash] = useState<string | null>(null);
 
   // 初始化加载云端书架
   useEffect(() => {
-    if (settings.syncKey?.trim() && isStrongSyncKey(settings.syncKey)) {
-      setLoadingBooks(true);
-      fetchCloudBookshelf(settings.syncKey)
-        .then(books => setCloudBooks(books || []))
-        .catch(err => console.error('Failed to load cloud bookshelf:', err))
-        .finally(() => setLoadingBooks(false));
-    }
+    if (!settings.syncKey?.trim() || !isStrongSyncKey(settings.syncKey)) return;
+    fetchCloudBookshelf(settings.syncKey)
+      .then(books => setCloudBooks(books || []))
+      .catch(err => console.error('Failed to load cloud bookshelf:', err))
+      .finally(() => setLoadingBooks(false));
   }, [settings.syncKey]);
 
   // 一键复制口令
@@ -122,6 +120,7 @@ export default function CloudSyncPage() {
     setLoadingBooks(true);
     fetchCloudBookshelf(keyToUse)
       .then(b => setCloudBooks(b || []))
+      .catch(err => console.error('Failed to load cloud bookshelf:', err))
       .finally(() => setLoadingBooks(false));
   };
 

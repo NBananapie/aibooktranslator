@@ -14,7 +14,6 @@ import {
   Zap,
   Check,
   Layers,
-  Loader2,
   RotateCw,
   Settings as SettingsIcon,
   Minus,
@@ -38,10 +37,7 @@ export interface MarkdownHeaderProps {
   autoTranslate: boolean;
   isPreTranslating: boolean;
   isNextPageCached: boolean;
-  canPreTranslate: boolean;
   hasTranslatedText: boolean;
-  totalPages?: number;
-  cachedPagesCount?: number;
   preloadProgress?: { total: number; done: number };
   onBackHome: () => void;
   onSetViewMode: (mode: 'translation' | 'ocr_source') => void;
@@ -72,10 +68,7 @@ export function MarkdownHeader({
   autoTranslate,
   isPreTranslating,
   isNextPageCached,
-  canPreTranslate,
   hasTranslatedText,
-  totalPages,
-  cachedPagesCount,
   preloadProgress,
   onBackHome,
   onSetViewMode,

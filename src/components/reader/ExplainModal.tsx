@@ -36,7 +36,7 @@ export function ExplainModal({
   if (!isOpen) return null;
 
   return (
-    <div className={styles.explainCardOverlay} onClick={onClose}>
+    <div data-interactive-protected="true" className={styles.explainCardOverlay} onClick={onClose}>
       <div className={styles.explainCardModal} onClick={e => e.stopPropagation()}>
         <div className={styles.explainHeader}>
           <h3 style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>

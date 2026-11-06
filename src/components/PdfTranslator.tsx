@@ -9,7 +9,6 @@ import { ClipItem, activeClips } from '@/lib/db';
 import { exportTranslationsAsMarkdown } from '@/services/exportService';
 import { capturePageCanvasAsBase64, requestPaddleOcr } from '@/services/ocrService';
 import { schedulePush, syncBook } from '@/services/cloudSyncService';
-import { TargetBlock } from '@/services/alignmentEngine';
 import { usePdfDocument } from '@/hooks/usePdfDocument';
 import { useTranslator } from '@/hooks/useTranslator';
 import { useBilingualSync } from '@/hooks/useBilingualSync';
@@ -22,8 +21,6 @@ import { ExplainModal } from './reader/ExplainModal';
 import { ReaderOverlays } from './reader/ReaderOverlays';
 import { SettingsModal } from './SettingsModal';
 import { BookOpen, ArrowRight, X } from 'lucide-react';
-
-const NO_TARGET_BLOCKS: TargetBlock[] = [];
 
 export default function PdfTranslator({ fileId }: { fileId: string }) {
   const { settings, theme, toggleTheme, fontSize, setFontSize } = useAppContext();
@@ -100,7 +97,50 @@ export default function PdfTranslator({ fileId }: { fileId: string }) {
     };
   }, [fingerprint, fileId, syncEnabled, settings.syncKey, setDbRecord]);
 
-  // 2. OCR 状态与视图切换
+  // 2. 原文版面分析、段落悬停与原文高亮
+  const {
+    pdfOriginalView,
+    sourceBlocks,
+    hoveredBlockId,
+    setHoveredBlockId,
+    exactHighlightSpans,
+    highlightTextInPdf,
+    pdfTextItems,
+  } = useBilingualSync({
+    file,
+    pdfDocument,
+    pageNumber,
+    pdfRenderWidth,
+    zoomScale,
+    pdfWrapperRef,
+  });
+
+  // 3. 翻译引擎调度与预加载
+  const {
+    displayedText,
+    isThinking,
+    isTranslating,
+    error,
+    setError,
+    autoTranslate,
+    setAutoTranslate,
+    isPreTranslating,
+    preloadProgress,
+    translationCache,
+    translateCurrentPage,
+    executeTranslateText,
+    preTranslatePipeline,
+  } = useTranslator({
+    file,
+    pdfDocument,
+    pageNumber,
+    numPages,
+    settings,
+    dbRecord,
+    setDbRecord,
+  });
+
+  // 4. OCR 状态与视图切换
   const [ocrCache, setOcrCache] = useState<Record<number, string>>({});
   const [isOcrLoading, setIsOcrLoading] = useState<boolean>(false);
   const [viewMode, setViewMode] = useState<'translation' | 'ocr_source'>('translation');
@@ -146,67 +186,15 @@ export default function PdfTranslator({ fileId }: { fileId: string }) {
         } else {
           setViewMode('ocr_source');
         }
-      } catch (err: any) {
+      } catch (err) {
         console.error('OCR Error:', err);
-        setError('OCR 识别失败: ' + (err.message || err));
+        setError('OCR 识别失败: ' + (err instanceof Error ? err.message : String(err)));
       } finally {
         setIsOcrLoading(false);
       }
     },
-    [file, pdfDocument, isOcrLoading, settings.ocr, captureCurrentPageImage]
+    [file, pdfDocument, isOcrLoading, settings.ocr, captureCurrentPageImage, setError, pageNumber, executeTranslateText]
   );
-
-  // 3. 双语版面分析、几何度量与精准荧光高亮
-  const {
-    pdfOriginalView,
-    sourceBlocks,
-    hoveredBlockId,
-    setHoveredBlockId,
-    blockLayoutMetrics,
-    syncScrollToBlock,
-    bilingualMapCache,
-    setBilingualMapCache,
-    exactHighlightSpans,
-    activeSentenceZh,
-    activeSentenceBlockId,
-    clearHighlights,
-    triggerHighlightFromZh,
-    triggerHighlightFromEn,
-    pdfTextItems,
-  } = useBilingualSync({
-    file,
-    pdfDocument,
-    pageNumber,
-    pdfRenderWidth,
-    zoomScale,
-    pdfWrapperRef,
-  });
-
-  // 4. 翻译引擎调度与预加载
-  const {
-    displayedText,
-    isThinking,
-    isTranslating,
-    error,
-    setError,
-    autoTranslate,
-    setAutoTranslate,
-    isPreTranslating,
-    preloadProgress,
-    translationCache,
-    translateCurrentPage,
-    executeTranslateText,
-    preTranslatePipeline,
-  } = useTranslator({
-    file,
-    pdfDocument,
-    pageNumber,
-    numPages,
-    settings,
-    dbRecord,
-    setDbRecord,
-  });
-  const targetBlocks = NO_TARGET_BLOCKS;
 
   // 5. 知识剪藏库管理
   const handleClipsChange = useCallback(
@@ -264,14 +252,7 @@ export default function PdfTranslator({ fileId }: { fileId: string }) {
     settings,
     clips,
     pageNumber,
-    bilingualMapCache,
-    onTriggerHighlightFromZh: (text, contextParagraph, blockId) =>
-      triggerHighlightFromZh(text, contextParagraph, blockId, targetBlocks),
-    onTriggerHighlightFromEn: (text, hintBlockId) =>
-      triggerHighlightFromEn(text, hintBlockId, targetBlocks),
-    onClearHighlights: clearHighlights,
     sourceBlocks,
-    targetBlocks,
   });
 
   const handleAddClip = async () => {
@@ -410,9 +391,7 @@ export default function PdfTranslator({ fileId }: { fileId: string }) {
         onBackHome={() => router.push('/')}
         sourceBlocks={sourceBlocks}
         hoveredBlockId={hoveredBlockId}
-        activeSentenceBlockId={activeSentenceBlockId}
         onHoverBlock={setHoveredBlockId}
-        onClickBlock={id => syncScrollToBlock(id, 'pdf')}
         pdfOriginalView={pdfOriginalView}
         clips={clips}
         pdfTextItems={pdfTextItems}
@@ -443,15 +422,12 @@ export default function PdfTranslator({ fileId }: { fileId: string }) {
         autoTranslate={autoTranslate}
         isPreTranslating={isPreTranslating}
         isNextPageCached={!!translationCache[pageNumber + 1]}
-        canPreTranslate={!!file && pageNumber < numPages && !isPreTranslating}
         hasTranslatedText={!!displayedText}
         displayedText={displayedText}
         fullTextThinking={isThinking}
         error={error}
         ocrText={ocrCache[pageNumber]}
         pageNumber={pageNumber}
-        activeSentenceZh={activeSentenceZh}
-        activeSentenceBlockId={activeSentenceBlockId}
         clips={clips}
         isOpen={isClipsDrawerOpen}
         toggleBtnRef={toggleBtnRef}
@@ -474,18 +450,10 @@ export default function PdfTranslator({ fileId }: { fileId: string }) {
         onExportMarkdown={handleExportClipsMarkdown}
         onJumpToPage={(page, text) => {
           goToPage(page);
-          triggerHighlightFromZh(text, undefined, undefined, targetBlocks);
+          highlightTextInPdf(text, page);
         }}
         onCopyClip={handleCopyClip}
         onDeleteClip={handleDeleteClip}
-        sourceBlocks={sourceBlocks}
-        targetBlocks={targetBlocks}
-        hoveredBlockId={hoveredBlockId}
-        onHoverBlock={setHoveredBlockId}
-        onClickBlock={id => syncScrollToBlock(id, 'markdown')}
-        blockLayoutMetrics={blockLayoutMetrics}
-        totalPages={numPages}
-        cachedPagesCount={Object.keys(translationCache).length}
         preloadProgress={preloadProgress}
         onOpenSettings={() => setIsSettingsOpen(true)}
       />

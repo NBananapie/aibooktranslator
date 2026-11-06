@@ -7,8 +7,10 @@ import 'react-pdf/dist/Page/TextLayer.css';
 import styles from '@/app/page.module.css';
 import { PdfHeader, PdfHeaderProps } from './PdfHeader';
 
+import type { PDFDocumentProxy } from 'pdfjs-dist';
+import type { TextItem } from 'pdfjs-dist/types/src/display/api';
 import { SourceBlock } from '@/services/layoutAnalysisEngine';
-import { findContiguousItemsForSentence } from '@/services/alignmentEngine';
+import { findContiguousItemsForSentence, textItemToRect } from '@/services/alignmentEngine';
 import { ClipItem } from '@/lib/db';
 
 // Initialize PDF.js worker
@@ -27,17 +29,15 @@ export interface PdfPaneProps extends PdfHeaderProps {
   isImmersive: boolean;
   pdfRenderWidth: number;
   exactHighlightSpans: Array<{ left: number; top: number; width: number; height: number }>;
-  onDocumentLoadSuccess: (pdf: any) => void;
+  onDocumentLoadSuccess: (pdf: PDFDocumentProxy) => void;
   onPdfSelection: () => void;
   sourceBlocks?: SourceBlock[];
   hoveredBlockId?: string | null;
-  activeSentenceBlockId?: string | null;
   onHoverBlock?: (id: string | null) => void;
-  onClickBlock?: (id: string) => void;
   pdfOriginalView?: number[];
   clips?: ClipItem[];
   onClippedSpanClick?: (e: React.MouseEvent, clip: ClipItem) => void;
-  pdfTextItems?: any[];
+  pdfTextItems?: TextItem[];
 }
 
 export function PdfPane({
@@ -54,9 +54,7 @@ export function PdfPane({
   onPdfSelection,
   sourceBlocks = [],
   hoveredBlockId = null,
-  activeSentenceBlockId = null,
   onHoverBlock,
-  onClickBlock,
   pdfOriginalView = [0, 0, 600, 800],
   clips = [],
   onClippedSpanClick,
@@ -70,7 +68,7 @@ export function PdfPane({
   const handlePdfMouseMove = (e: React.MouseEvent) => {
     if (e.buttons > 0) return; // 正在按住鼠标拖拽选词时，禁止触发 Hover 切换与重绘
     // 当存在活跃划词高亮或正在聚焦句子时，锁定聚焦段落，禁止鼠标游走触发全局重绘和边框抖动闪烁
-    if (activeSentenceBlockId || exactHighlightSpans.length > 0) return;
+    if (exactHighlightSpans.length > 0) return;
     if (!sourceBlocks || sourceBlocks.length === 0 || !pdfWrapperRef.current) return;
     const wrapper = pdfWrapperRef.current;
     const rect = wrapper.getBoundingClientRect();
@@ -118,19 +116,9 @@ export function PdfPane({
       const matchedItems = findContiguousItemsForSentence(clip.text.trim(), validItems);
       if (matchedItems && matchedItems.length > 0) {
         matchedItems.forEach((item, idx) => {
-          const x = item.transform[4];
-          const y = item.transform[5];
-          const fontHeight = Math.abs(item.transform[3]) || Math.abs(item.transform[0]) || 12;
-          const w = item.width || item.str.length * fontHeight * 0.55;
-
-          const left = x * scale;
-          const top = (origHeight - y - fontHeight * 0.95) * scale;
-          const width = w * scale;
-          const height = fontHeight * 1.15 * scale;
-
           result.push({
             clip,
-            rect: { left, top, width, height },
+            rect: textItemToRect(item, origHeight, scale),
             key: `pdf-clip-${clip.id}-${idx}`,
           });
         });
@@ -157,7 +145,7 @@ export function PdfPane({
         onMouseUp={onPdfSelection}
         onMouseMove={handlePdfMouseMove}
         onMouseLeave={() => {
-          if (!activeSentenceBlockId && exactHighlightSpans.length === 0) {
+          if (exactHighlightSpans.length === 0) {
             onHoverBlock?.(null);
           }
         }}
@@ -187,7 +175,7 @@ export function PdfPane({
                 const top = block.box.y * scale;
                 const width = block.box.width * scale;
                 const height = block.box.height * scale;
-                const isHovered = activeSentenceBlockId ? activeSentenceBlockId === block.id : hoveredBlockId === block.id;
+                const isHovered = hoveredBlockId === block.id;
 
                 return (
                   <div
@@ -199,7 +187,6 @@ export function PdfPane({
                       width: `${width}px`,
                       height: `${height}px`,
                     }}
-                    onClick={() => onClickBlock?.(block.id)}
                   />
                 );
               })}

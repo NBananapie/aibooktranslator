@@ -1,22 +1,22 @@
 "use client";
 
-import React, { useRef, useMemo, useEffect, useCallback } from 'react';
+import React, { useMemo, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import styles from '@/app/page.module.css';
 import { ClipItem } from '@/lib/db';
 import { ScanText, Zap } from 'lucide-react';
 import { isValidClippedText } from '@/hooks/useTextSelection';
-import { SourceBlock } from '@/services/layoutAnalysisEngine';
-import { TargetBlock } from '@/services/alignmentEngine';
-import { BlockLayoutMetrics } from '@/hooks/useBilingualSync';
 import { MarkdownHeader, MarkdownHeaderProps } from './MarkdownHeader';
 import { ClipsDrawer, ClipsDrawerProps } from './ClipsDrawer';
 
 const REMARK_PLUGINS = [remarkGfm];
 
+/** react-markdown 传给自定义组件的属性：原生元素属性 + 语法树节点 */
+type MdProps<T extends keyof React.JSX.IntrinsicElements> = React.ComponentPropsWithoutRef<T> & { node?: unknown };
+type HighlightTag = 'p' | 'h1' | 'h2' | 'h3' | 'h4' | 'li' | 'blockquote';
+
 interface BlockContentRendererProps {
-  blockId: string;
   text: string;
   currentPageClips: ClipItem[];
   onClippedSpanClick?: (e: React.MouseEvent, clip: ClipItem) => void;
@@ -29,8 +29,8 @@ function extractPlainText(node: React.ReactNode): string {
   if (Array.isArray(node)) {
     return node.map(extractPlainText).join('');
   }
-  if (React.isValidElement(node) && (node.props as any)?.children) {
-    return extractPlainText((node.props as any).children);
+  if (React.isValidElement<{ children?: React.ReactNode }>(node) && node.props.children) {
+    return extractPlainText(node.props.children);
   }
   return '';
 }
@@ -106,9 +106,9 @@ function wrapNodesWithRanges(
     );
   }
 
-  if (React.isValidElement(nodes)) {
-    const elementProps = nodes.props as any;
-    if (elementProps?.children) {
+  if (React.isValidElement<{ children?: React.ReactNode }>(nodes)) {
+    const elementProps = nodes.props;
+    if (elementProps.children) {
       const newChildren = wrapNodesWithRanges(
         elementProps.children,
         ranges,
@@ -126,7 +126,6 @@ function wrapNodesWithRanges(
 
 const BlockContentRenderer = React.memo(
   function BlockContentRenderer({
-    blockId,
     text,
     currentPageClips,
     onClippedSpanClick,
@@ -215,32 +214,27 @@ const BlockContentRenderer = React.memo(
       [currentPageClips, onClippedSpanClick]
     );
 
-    const customComponents = useMemo(
-      () => ({
-        p: ({ node, children, ...props }: any) => (
-          <p {...props}>{highlightBlockChildren(children)}</p>
-        ),
-        h1: ({ node, children, ...props }: any) => (
-          <h1 {...props}>{highlightBlockChildren(children)}</h1>
-        ),
-        h2: ({ node, children, ...props }: any) => (
-          <h2 {...props}>{highlightBlockChildren(children)}</h2>
-        ),
-        h3: ({ node, children, ...props }: any) => (
-          <h3 {...props}>{highlightBlockChildren(children)}</h3>
-        ),
-        h4: ({ node, children, ...props }: any) => (
-          <h4 {...props}>{highlightBlockChildren(children)}</h4>
-        ),
-        li: ({ node, children, ...props }: any) => (
-          <li {...props}>{highlightBlockChildren(children)}</li>
-        ),
-        blockquote: ({ node, children, ...props }: any) => (
-          <blockquote {...props}>{highlightBlockChildren(children)}</blockquote>
-        ),
-      }),
-      [highlightBlockChildren]
-    );
+    const customComponents = useMemo(() => {
+      /** 生成会在文本中标记已剪藏片段的块级元素；去掉 react-markdown 传入的 node 属性，避免写到 DOM 上 */
+      const withClipHighlight = <T extends HighlightTag>(Tag: T) => {
+        function Highlighted(props: MdProps<T>) {
+          const rest: Record<string, unknown> = { ...props };
+          delete rest.node;
+          delete rest.children;
+          return React.createElement(Tag, rest, highlightBlockChildren(props.children));
+        }
+        return Highlighted;
+      };
+      return {
+        p: withClipHighlight('p'),
+        h1: withClipHighlight('h1'),
+        h2: withClipHighlight('h2'),
+        h3: withClipHighlight('h3'),
+        h4: withClipHighlight('h4'),
+        li: withClipHighlight('li'),
+        blockquote: withClipHighlight('blockquote'),
+      };
+    }, [highlightBlockChildren]);
 
     return (
       <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={customComponents}>
@@ -262,18 +256,9 @@ export interface MarkdownPaneProps extends MarkdownHeaderProps, ClipsDrawerProps
   error: string;
   ocrText?: string;
   pageNumber: number;
-  activeSentenceZh: string;
-  activeSentenceBlockId?: string | null;
   onExecuteTranslateText: (text: string, page: number) => void;
   onMarkdownSelection: () => void;
   onClippedSpanClick: (e: React.MouseEvent, clip: ClipItem) => void;
-  sourceBlocks?: SourceBlock[];
-  targetBlocks?: TargetBlock[];
-  hoveredBlockId?: string | null;
-  onHoverBlock?: (id: string | null) => void;
-  onClickBlock?: (id: string) => void;
-  blockLayoutMetrics?: Record<string, BlockLayoutMetrics>;
-  markdownContainerRef?: React.RefObject<HTMLDivElement | null>;
 }
 
 export function MarkdownPane({
@@ -287,8 +272,6 @@ export function MarkdownPane({
   error,
   ocrText,
   pageNumber,
-  activeSentenceZh,
-  activeSentenceBlockId,
   fullWidthReading,
   clips,
   onExecuteTranslateText,
@@ -303,19 +286,10 @@ export function MarkdownPane({
   onJumpToPage,
   onCopyClip,
   onDeleteClip,
-  sourceBlocks = [],
-  targetBlocks = [],
-  hoveredBlockId = null,
-  onHoverBlock,
-  onClickBlock,
-  blockLayoutMetrics = {},
-  markdownContainerRef,
   fontSize = 16,
   setFontSize,
   ...headerProps
 }: MarkdownPaneProps) {
-  const internalMarkdownContainerRef = useRef<HTMLDivElement>(null);
-  const containerRefToUse = markdownContainerRef || internalMarkdownContainerRef;
   const currentPageClips = useMemo(
     () => clips.filter(c => c.pageNumber === pageNumber && isValidClippedText(c.text)),
     [clips, pageNumber]
@@ -344,12 +318,11 @@ export function MarkdownPane({
       <div className={styles.rightPaneBody}>
         <div
           className={`${styles.markdownWrapper} ${styles.pageFadeIn}`}
-          ref={containerRefToUse}
           onMouseUp={onMarkdownSelection}
           onKeyUp={onMarkdownSelection}
           style={{ '--reader-font-size': `${fontSize}px` } as React.CSSProperties}
         >
-          {isTranslating && !displayedText && targetBlocks.length === 0 ? (
+          {isTranslating && !displayedText ? (
             <div className={styles.loadingOverlay}>
               <div className={styles.spinner} />
               <p>{fullTextThinking ? 'AI 正在深度思考中...' : '正在连接 AI 引擎流式输出...'}</p>
@@ -433,7 +406,6 @@ export function MarkdownPane({
               }}
             >
               <BlockContentRenderer
-                blockId="full-page"
                 text={displayedText ? displayedText : '待翻译或翻页中...'}
                 currentPageClips={currentPageClips}
                 onClippedSpanClick={onClippedSpanClick}

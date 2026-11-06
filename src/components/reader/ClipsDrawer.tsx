@@ -58,7 +58,7 @@ export function ClipsDrawer({
       </button>
 
       {/* 平级并排剪藏栏 */}
-      <div className={`${styles.inlineClipsSidebar} ${!isOpen ? styles.inlineClipsSidebarClosed : ''}`}>
+      <div data-interactive-protected="true" className={`${styles.inlineClipsSidebar} ${!isOpen ? styles.inlineClipsSidebarClosed : ''}`}>
         <div className={styles.clipsHeader}>
           <h3 style={{ fontSize: '13.5px', display: 'flex', alignItems: 'center', gap: '6px' }}>
             <BookmarkCheck size={16} style={{ color: 'var(--primary)' }} /> 本书剪藏 ({validClips.length})

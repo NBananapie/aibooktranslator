@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAppContext, AppSettings, DEFAULT_OCR_SETTINGS } from '@/context/AppContext';
 import { buildDefaultTranslatePrompt } from '@/lib/llm/prompts';
@@ -48,12 +48,15 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   });
   const isBackdropMouseDownRef = React.useRef(false);
 
-  useEffect(() => {
+  // 每次打开时用当前设置重置表单（在渲染期间比较打开状态，避免 effect 中同步 setState）
+  const [wasOpen, setWasOpen] = useState(isOpen);
+  if (isOpen !== wasOpen) {
+    setWasOpen(isOpen);
     if (isOpen) {
       setFormSettings(settings);
       setSyncTestStatus({ testing: false });
     }
-  }, [isOpen, settings]);
+  }
 
   const generateRandomSyncKey = () => {
     const key = generateStrongSyncKey();
@@ -166,6 +169,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   return (
     <div
       className={styles.modalOverlay}
+      data-interactive-protected="true"
       onMouseDown={e => {
         isBackdropMouseDownRef.current = e.target === e.currentTarget;
       }}

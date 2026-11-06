@@ -1,100 +1,69 @@
-import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { pdfjs } from 'react-pdf';
-import {
-  findContiguousItemsForSentence,
-  extractSpecificEnForQuery,
-  findMatchingZhSentenceForEnQuery,
-  findMatchingEnSentenceForZhQuery,
-  BilingualMapEntry,
-  TargetBlock,
-} from '@/services/alignmentEngine';
+import type { PDFDocumentProxy } from 'pdfjs-dist';
+import type { TextItem } from 'pdfjs-dist/types/src/display/api';
+import { findContiguousItemsForSentence, HighlightRect, textItemToRect } from '@/services/alignmentEngine';
 import { analyzePageLayout, SourceBlock } from '@/services/layoutAnalysisEngine';
 
-export interface ExactHighlightSpan {
-  left: number;
-  top: number;
-  width: number;
-  height: number;
-}
-
-export interface BlockLayoutMetrics {
-  id: string;
-  topPx: number;
-  heightPx: number;
-  marginTopPx: number;
-}
+export type ExactHighlightSpan = HighlightRect;
 
 export interface UseBilingualSyncOptions {
   file: File | null;
-  pdfDocument?: any;
+  pdfDocument?: PDFDocumentProxy | null;
   pageNumber: number;
-  displayedText?: string;
   pdfRenderWidth: number;
   zoomScale: number;
   pdfWrapperRef: React.RefObject<HTMLDivElement | null>;
-  markdownContainerRef?: React.RefObject<HTMLDivElement | null>;
-  targetBlocks?: TargetBlock[];
 }
 
+interface PageLayout {
+  page: number;
+  textItems: TextItem[];
+  view: number[];
+  blocks: SourceBlock[];
+}
+
+interface PageScoped<T> {
+  page: number;
+  value: T;
+}
+
+const DEFAULT_VIEW = [0, 0, 600, 800];
+const NO_ITEMS: TextItem[] = [];
+const NO_BLOCKS: SourceBlock[] = [];
+
+function isTextItem(item: unknown): item is TextItem {
+  return typeof item === 'object' && item !== null && 'str' in item;
+}
+
+/**
+ * 当前页的原文版面数据（文本块、段落块、页面尺寸）、段落悬停与原文高亮。
+ * 悬停与高亮状态绑定页码，翻页后自动失效。
+ */
 export function useBilingualSync(options: UseBilingualSyncOptions) {
-  const {
-    file,
-    pdfDocument,
-    pageNumber,
-    displayedText = '',
-    pdfRenderWidth,
-    zoomScale,
-    pdfWrapperRef,
-    markdownContainerRef,
-    targetBlocks = [],
-  } = options;
+  const { file, pdfDocument, pageNumber, pdfRenderWidth, zoomScale, pdfWrapperRef } = options;
 
-  // PDF Text Items 缓存与原始页面尺寸
-  const [pdfTextItems, setPdfTextItems] = useState<any[]>([]);
-  const [pdfOriginalView, setPdfOriginalView] = useState<number[]>([0, 0, 600, 800]);
+  const [layout, setLayout] = useState<PageLayout | null>(null);
+  const [hovered, setHovered] = useState<PageScoped<string | null> | null>(null);
+  const [highlight, setHighlight] = useState<PageScoped<string> | null>(null);
 
-  // 段落版面分析结果
-  const [sourceBlocks, setSourceBlocks] = useState<SourceBlock[]>([]);
-  const [hoveredBlockId, setHoveredBlockId] = useState<string | null>(null);
-
-  // 双语对齐映射缓存 (BILINGUAL_MAP)
-  const [bilingualMapCache, setBilingualMapCache] = useState<
-    Record<number, BilingualMapEntry[]>
-  >({});
-
-  // 精准行内划词高亮条状态
-  const [exactHighlightSpans, setExactHighlightSpans] = useState<ExactHighlightSpan[]>([]);
-  const [activeHighlightZh, setActiveHighlightZh] = useState<string>('');
-  const [activeSentenceZh, setActiveSentenceZh] = useState<string>('');
-  const [activeSentenceBlockId, setActiveSentenceBlockId] = useState<string | null>(null);
-  const highlightTimerRef = useRef<NodeJS.Timeout | null>(null);
-
-  // 1. 提取当前页的 PDF TextItems 与原始尺寸并生成结构化段落块
+  // 读取当前页文本内容并做版面分析
   useEffect(() => {
     if ((!pdfDocument && !file) || pageNumber < 1) return;
     let isCancelled = false;
 
     (async () => {
       try {
-        let doc = pdfDocument;
-        if (!doc && file) {
-          const arrayBuffer = await file.arrayBuffer();
-          doc = await pdfjs.getDocument({ data: arrayBuffer }).promise;
-        }
+        const doc = pdfDocument ?? (file ? await pdfjs.getDocument({ data: await file.arrayBuffer() }).promise : null);
         if (!doc) return;
-
         const page = await doc.getPage(pageNumber);
         const textContent = await page.getTextContent();
-        if (!isCancelled) {
-          const items = textContent.items || [];
-          const view = page.view || [0, 0, 600, 800];
-          setPdfTextItems(items);
-          setPdfOriginalView(view);
-          const blocks = analyzePageLayout(items, view, pageNumber);
-          setSourceBlocks(blocks);
-        }
+        if (isCancelled) return;
+        const textItems = textContent.items.filter(isTextItem);
+        const view = page.view || DEFAULT_VIEW;
+        setLayout({ page: pageNumber, textItems, view, blocks: analyzePageLayout(textItems, view, pageNumber) });
       } catch (e) {
-        console.error('Error fetching page text content for exact highlights', e);
+        console.error('读取页面文本失败', e);
       }
     })();
 
@@ -103,238 +72,58 @@ export function useBilingualSync(options: UseBilingualSyncOptions) {
     };
   }, [pdfDocument, file, pageNumber]);
 
-  // 2. 计算各段落块的绝对像素度量，用于右侧样式镜像与对齐
-  const blockLayoutMetrics = useMemo(() => {
-    const metrics: Record<string, BlockLayoutMetrics> = {};
-    if (sourceBlocks.length === 0) return metrics;
+  const current = layout?.page === pageNumber ? layout : null;
+  const pdfTextItems = current?.textItems ?? NO_ITEMS;
+  const pdfOriginalView = current?.view ?? DEFAULT_VIEW;
+  const sourceBlocks = current?.blocks ?? NO_BLOCKS;
 
-    const origWidth = pdfOriginalView[2] || 600;
-    const currentRenderW = pdfRenderWidth * zoomScale;
-    const scale = origWidth > 0 ? currentRenderW / origWidth : 1;
+  const setHoveredBlockId = useCallback(
+    (id: string | null) => setHovered({ page: pageNumber, value: id }),
+    [pageNumber]
+  );
 
-    let prevBottomPx = 0;
-    for (let i = 0; i < sourceBlocks.length; i++) {
-      const b = sourceBlocks[i];
-      const topPx = Math.round(b.box.y * scale);
-      const heightPx = Math.max(28, Math.round(b.box.height * scale));
-      const rawMarginTop = i === 0 ? topPx : topPx - prevBottomPx;
-      const marginTopPx = Math.max(6, rawMarginTop);
-
-      metrics[b.id] = {
-        id: b.id,
-        topPx,
-        heightPx,
-        marginTopPx,
-      };
-      prevBottomPx = topPx + heightPx;
-    }
-    return metrics;
-  }, [sourceBlocks, pdfOriginalView, pdfRenderWidth, zoomScale]);
-
-  // 3. 页面切换时，重置当页高亮与悬浮状态
-  useEffect(() => {
-    setExactHighlightSpans([]);
-    setActiveHighlightZh('');
-    setActiveSentenceZh('');
-    setActiveSentenceBlockId(null);
-    setHoveredBlockId(null);
-  }, [pageNumber]);
-
-  // 4. 清空高亮
   const clearHighlights = useCallback(() => {
-    setExactHighlightSpans([]);
-    setActiveHighlightZh('');
-    setActiveSentenceZh('');
-    setActiveSentenceBlockId(null);
-    setHoveredBlockId(null);
+    setHighlight(null);
+    setHovered(null);
   }, []);
 
-  // 5. 双向滚动同步（防互锁抖动）
-  const isSyncScrollingRef = useRef<boolean>(false);
-  const syncTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-
-  const syncScrollToBlock = useCallback(
-    (blockId: string, source: 'pdf' | 'markdown') => {
-      if (isSyncScrollingRef.current) return;
-      isSyncScrollingRef.current = true;
-      if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
-      syncTimeoutRef.current = setTimeout(() => {
-        isSyncScrollingRef.current = false;
-      }, 400);
-
-      const targetEl =
-        source === 'pdf'
-          ? document.getElementById(`target-${blockId}`)
-          : document.querySelector(`[class*="pdfBlockOverlay"][data-block-id="${blockId}"]`);
-
-      if (targetEl) {
-        targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      }
+  /**
+   * 在原文中高亮与给定英文文本连续匹配的位置。page 可指定目标页（如从剪藏跳转），
+   * 该页文本加载完成后再计算位置。
+   */
+  const highlightTextInPdf = useCallback(
+    (text: string, page: number = pageNumber) => {
+      const query = text.trim();
+      setHighlight(query ? { page, value: query } : null);
     },
-    []
+    [pageNumber]
   );
 
-  // 6. 从译文划词 -> 触发左侧 PDF 精准荧光高亮 (句级对齐，不破坏右侧原生选区)
-  const triggerHighlightFromZh = useCallback(
-    (
-      queryZh: string,
-      contextParagraph?: string,
-      blockId?: string,
-      overrideTargetBlocks?: TargetBlock[]
-    ) => {
-      const cleanZh = queryZh.trim();
-      if (!cleanZh) return;
+  const scale = (pdfRenderWidth * zoomScale) / (pdfOriginalView[2] || 600);
+  const pageHeight = pdfOriginalView[3] || 800;
+  const highlightQuery = highlight?.page === pageNumber ? highlight.value : '';
 
-      const activeBlocks = overrideTargetBlocks || targetBlocks;
-      const currentMap = bilingualMapCache[pageNumber] || [];
-      const { matchedEnSentence, matchedZhSentence, matchedBlockId } =
-        findMatchingEnSentenceForZhQuery({
-          zhQuery: cleanZh,
-          sourceBlocks,
-          targetBlocks: activeBlocks,
-          bilingualMap: currentMap,
-          hintBlockId: blockId,
-          contextParagraph,
-        });
+  const exactHighlightSpans = useMemo<HighlightRect[]>(() => {
+    if (!highlightQuery || pdfTextItems.length === 0) return [];
+    const validItems = pdfTextItems.filter(item => item.str && item.str.trim() && item.transform);
+    return findContiguousItemsForSentence(highlightQuery, validItems).map(item => textItemToRect(item, pageHeight, scale));
+  }, [highlightQuery, pdfTextItems, pageHeight, scale]);
 
-      if (matchedBlockId || blockId) {
-        setHoveredBlockId(matchedBlockId || blockId || null);
-        setActiveSentenceBlockId(matchedBlockId || blockId || null);
-      }
-
-      if (!pdfWrapperRef.current || pdfTextItems.length === 0) return;
-
-      const origWidth = pdfOriginalView[2] || 600;
-      const origHeight = pdfOriginalView[3] || 800;
-      const currentRenderW = pdfRenderWidth * zoomScale;
-      const scale = currentRenderW / origWidth;
-
-      const validItems = pdfTextItems.filter(
-        item => item.str && item.str.trim() && item.transform
-      );
-      if (validItems.length === 0) return;
-
-      let matchedItems: any[] = [];
-      if (matchedEnSentence) {
-        matchedItems = findContiguousItemsForSentence(matchedEnSentence, validItems);
-      }
-      if (matchedItems.length === 0 && /[a-zA-Z0-9]{2,}/.test(cleanZh)) {
-        matchedItems = findContiguousItemsForSentence(cleanZh, validItems);
-      }
-
-      if (matchedItems.length > 0) {
-        const spans = matchedItems.map(item => {
-          const x = item.transform[4];
-          const y = item.transform[5];
-          const fontHeight = Math.abs(item.transform[3]) || Math.abs(item.transform[0]) || 12;
-          const w = item.width || item.str.length * fontHeight * 0.55;
-
-          const left = x * scale;
-          const top = (origHeight - y - fontHeight * 0.95) * scale;
-          const width = w * scale;
-          const height = fontHeight * 1.15 * scale;
-
-          return { left, top, width, height };
-        });
-
-        setExactHighlightSpans(spans);
-
-        if (spans.length > 0 && pdfWrapperRef.current) {
-          pdfWrapperRef.current.scrollTo({
-            top: Math.max(0, spans[0].top - 100),
-            behavior: 'smooth',
-          });
-        }
-      }
-    },
-    [bilingualMapCache, pageNumber, sourceBlocks, targetBlocks, pdfTextItems, pdfOriginalView, pdfRenderWidth, zoomScale, pdfWrapperRef]
-  );
-
-  // 7. 从原文 PDF 划词 -> 触发右侧译文对应中文句高亮 & 左侧整句高亮包裹
-  const triggerHighlightFromEn = useCallback(
-    (queryEn: string, hintBlockId?: string, overrideTargetBlocks?: TargetBlock[]) => {
-      const cleanEn = queryEn.trim();
-      if (!cleanEn) return;
-
-      const activeBlocks = overrideTargetBlocks || targetBlocks;
-      const currentMap = bilingualMapCache[pageNumber] || [];
-      const { matchedZhSentence, matchedEnSentence, matchedBlockId } =
-        findMatchingZhSentenceForEnQuery({
-          enQuery: cleanEn,
-          sourceBlocks,
-          targetBlocks: activeBlocks,
-          bilingualMap: currentMap,
-          hintBlockId,
-        });
-
-      if (matchedZhSentence) {
-        setActiveSentenceZh(matchedZhSentence);
-        setActiveSentenceBlockId(matchedBlockId || hintBlockId || null);
-        setHoveredBlockId(matchedBlockId || hintBlockId || null);
-      }
-
-      // 如果有对应的 blockId，通知平滑滚动右侧对应卡片
-      if (matchedBlockId) {
-        const targetEl = document.getElementById(`target-${matchedBlockId}`);
-        if (targetEl) {
-          targetEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-        }
-      }
-
-      // 左侧 PDF 同步荧光高亮对应的整句
-      if (pdfWrapperRef.current && pdfTextItems.length > 0) {
-        const origWidth = pdfOriginalView[2] || 600;
-        const origHeight = pdfOriginalView[3] || 800;
-        const currentRenderW = pdfRenderWidth * zoomScale;
-        const scale = currentRenderW / origWidth;
-
-        const validItems = pdfTextItems.filter(
-          item => item.str && item.str.trim() && item.transform
-        );
-        const sentenceToHighlight = matchedEnSentence || cleanEn;
-        const matchedItems = findContiguousItemsForSentence(sentenceToHighlight, validItems);
-
-        if (matchedItems.length > 0) {
-          const spans = matchedItems.map(item => {
-            const x = item.transform[4];
-            const y = item.transform[5];
-            const fontHeight = Math.abs(item.transform[3]) || Math.abs(item.transform[0]) || 12;
-            const w = item.width || item.str.length * fontHeight * 0.55;
-
-            return {
-              left: x * scale,
-              top: (origHeight - y - fontHeight * 0.95) * scale,
-              width: w * scale,
-              height: fontHeight * 1.15 * scale,
-            };
-          });
-          setExactHighlightSpans(spans);
-        }
-      }
-    },
-    [bilingualMapCache, pageNumber, sourceBlocks, targetBlocks, pdfTextItems, pdfOriginalView, pdfRenderWidth, zoomScale, pdfWrapperRef]
-  );
+  // 高亮出现时滚动到第一处
+  const firstHighlightTop = exactHighlightSpans[0]?.top;
+  useEffect(() => {
+    if (firstHighlightTop === undefined) return;
+    pdfWrapperRef.current?.scrollTo({ top: Math.max(0, firstHighlightTop - 100), behavior: 'smooth' });
+  }, [firstHighlightTop, pdfWrapperRef]);
 
   return {
     pdfTextItems,
     pdfOriginalView,
     sourceBlocks,
-    hoveredBlockId,
+    hoveredBlockId: hovered?.page === pageNumber ? hovered.value : null,
     setHoveredBlockId,
-    blockLayoutMetrics,
-    syncScrollToBlock,
-    bilingualMapCache,
-    setBilingualMapCache,
     exactHighlightSpans,
-    setExactHighlightSpans,
-    activeHighlightZh,
-    activeSentenceZh,
-    setActiveSentenceZh,
-    activeSentenceBlockId,
-    setActiveSentenceBlockId,
     clearHighlights,
-    triggerHighlightFromZh,
-    triggerHighlightFromEn,
-    triggerExactHighlightForSelection: triggerHighlightFromZh,
+    highlightTextInPdf,
   };
 }
