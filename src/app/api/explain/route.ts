@@ -60,7 +60,6 @@ export async function POST(req: Request) {
       ],
       temperature: 0.4,
     },
-    req.signal,
-    upstream.fallbackConfig
+    req.signal
   );
 }

@@ -217,15 +217,30 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
         </div>
 
         <div className={styles.formGroup}>
-          <label>LLM API Key</label>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <label>LLM API Key</label>
+            <a
+              href="https://apihub.agnes-ai.com"
+              target="_blank"
+              rel="noopener noreferrer"
+              className={styles.btnSecondary}
+              style={{ padding: '2px 8px', fontSize: '11px', display: 'inline-flex', alignItems: 'center', gap: '4px', textDecoration: 'none' }}
+            >
+              免费开通 Agnes API Key →
+            </a>
+          </div>
           <input 
             type="password" 
             value={formSettings.apiKey} 
             onChange={e => handleApiKeyChange(e.target.value)}
-            placeholder="留空使用站点内置额度；或填入你自己的 API Key"
+            placeholder="填入您的 API Key（未开通可点击右上角免费获取）"
           />
           <p style={hintStyle}>
-            Key 以明文保存在本浏览器的 localStorage 中，优先由浏览器直连服务商；若服务商不允许浏览器跨域访问，会改由本站服务端转发（Key 随请求经过本站，不做存储）。留空时使用站点内置额度，有频率限制。
+            首次使用请前往{' '}
+            <a href="https://apihub.agnes-ai.com" target="_blank" rel="noopener noreferrer" style={{ fontWeight: 600 }}>
+              Agnes API 开放平台 (apihub.agnes-ai.com)
+            </a>{' '}
+            免费注册并获取 API Key。Key 保存在本浏览器的 localStorage 中，优先由浏览器直连服务商；若服务商不允许浏览器跨域访问，会改由本站服务端转发（不做存储）。
           </p>
         </div>
 
