@@ -45,11 +45,12 @@
   "observability": {
     "enabled": true
   },
-  // 非敏感配置。API_KEY 等密钥请用 `npx wrangler secret put API_KEY` 设置，不要写在这里
+  // 非敏感配置。API_KEY / DASHSCOPE_API_KEY 等密钥请用 `npx wrangler secret put <名称>` 设置，不要写在这里
+  // 线上 Worker 默认使用阿里云百炼 DashScope（避免 Agnes 网关对 Cloudflare Worker 共享出口 IP 触发 1015 限流）
   "vars": {
     "LLM_PROVIDER": "openai",
-    "BASE_URL": "https://apihub.agnes-ai.com/v1",
-    "MODEL": "agnes-3.0-flash",
+    "BASE_URL": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "MODEL": "qwen-plus",
     "ALLOW_SERVER_API_KEY": "true"
   }
 }

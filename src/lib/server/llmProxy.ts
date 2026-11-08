@@ -27,10 +27,12 @@ export interface ClientLlmFields {
 }
 
 export type UpstreamResolution =
-  | { ok: true; config: LlmEndpointConfig; usingServerKey: boolean }
+  | { ok: true; config: LlmEndpointConfig; fallbackConfig?: LlmEndpointConfig; usingServerKey: boolean }
   | { ok: false; status: number; error: string };
 
 const PROVIDERS: readonly LlmProvider[] = ['openai', 'gemini', 'custom'];
+const DASHSCOPE_BASE_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1';
+const DASHSCOPE_DEFAULT_MODEL = 'qwen-plus';
 
 export function asTrimmedString(value: unknown, maxLength: number): string {
   return typeof value === 'string' ? value.trim().slice(0, maxLength) : '';
@@ -79,7 +81,13 @@ export function resolveUpstream(fields: ClientLlmFields): UpstreamResolution {
     };
   }
 
-  const serverKey = process.env.API_KEY || process.env.AGNES_API_KEY || process.env.DASHSCOPE_API_KEY;
+  const configuredBaseUrl = process.env.BASE_URL?.trim();
+  const dashscopeKey = process.env.DASHSCOPE_API_KEY?.trim();
+  const primaryKey = process.env.API_KEY?.trim() || process.env.AGNES_API_KEY?.trim();
+  const useDashScopePrimary =
+    !!configuredBaseUrl?.includes('dashscope.aliyuncs.com') || (!primaryKey && !!dashscopeKey);
+
+  const serverKey = useDashScopePrimary ? dashscopeKey || primaryKey : primaryKey || dashscopeKey;
   if (process.env.ALLOW_SERVER_API_KEY !== 'true' || !serverKey) {
     return {
       ok: false,
@@ -88,15 +96,35 @@ export function resolveUpstream(fields: ClientLlmFields): UpstreamResolution {
     };
   }
 
+  const config: LlmEndpointConfig = useDashScopePrimary
+    ? {
+        provider: 'openai',
+        baseUrl: configuredBaseUrl || DASHSCOPE_BASE_URL,
+        apiKey: serverKey,
+        model: process.env.MODEL?.trim() || DASHSCOPE_DEFAULT_MODEL,
+      }
+    : {
+        provider: asProvider(process.env.LLM_PROVIDER) ?? 'openai',
+        baseUrl: configuredBaseUrl || DEFAULT_OPENAI_BASE_URL,
+        apiKey: serverKey,
+        model: process.env.MODEL?.trim() || DEFAULT_OPENAI_MODEL,
+      };
+
+  const fallbackConfig: LlmEndpointConfig | undefined =
+    !useDashScopePrimary && dashscopeKey
+      ? {
+          provider: 'openai',
+          baseUrl: DASHSCOPE_BASE_URL,
+          apiKey: dashscopeKey,
+          model: process.env.DASHSCOPE_MODEL?.trim() || DASHSCOPE_DEFAULT_MODEL,
+        }
+      : undefined;
+
   return {
     ok: true,
     usingServerKey: true,
-    config: {
-      provider: asProvider(process.env.LLM_PROVIDER) ?? 'openai',
-      baseUrl: process.env.BASE_URL || DEFAULT_OPENAI_BASE_URL,
-      apiKey: serverKey,
-      model: process.env.MODEL || DEFAULT_OPENAI_MODEL,
-    },
+    config,
+    fallbackConfig,
   };
 }
 
@@ -145,24 +173,38 @@ export async function readJsonBody(req: Request, maxBytes: number): Promise<Reco
 /** 等待上游返回响应头的最长时间；之后的流式输出不受此限制 */
 const UPSTREAM_HEADER_TIMEOUT_MS = 30_000;
 
-/** 转发到上游，网络异常或超时统一转为 502/504 */
-export async function proxyChat(config: LlmEndpointConfig, request: ChatRequest, signal?: AbortSignal): Promise<Response> {
-  const controller = new AbortController();
-  const onClientAbort = () => controller.abort(signal?.reason);
-  signal?.addEventListener('abort', onClientAbort, { once: true });
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    controller.abort();
-  }, UPSTREAM_HEADER_TIMEOUT_MS);
+/** 转发到上游，网络异常或超时统一转为 502/504；若提供备用上游且主上游返回 429/5xx 则自动切换 */
+export async function proxyChat(
+  config: LlmEndpointConfig,
+  request: ChatRequest,
+  signal?: AbortSignal,
+  fallbackConfig?: LlmEndpointConfig
+): Promise<Response> {
+  const attempt = async (target: LlmEndpointConfig): Promise<Response> => {
+    const controller = new AbortController();
+    const onClientAbort = () => controller.abort(signal?.reason);
+    signal?.addEventListener('abort', onClientAbort, { once: true });
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, UPSTREAM_HEADER_TIMEOUT_MS);
 
-  try {
-    return await streamChat(config, request, controller.signal);
-  } catch (err) {
-    if (timedOut) return jsonError(504, '模型服务响应超时，请稍后重试');
-    const message = err instanceof Error ? err.message : String(err);
-    return jsonError(502, `无法连接模型服务: ${message}`);
-  } finally {
-    clearTimeout(timer);
+    try {
+      return await streamChat(target, request, controller.signal);
+    } catch (err) {
+      if (timedOut) return jsonError(504, '模型服务响应超时，请稍后重试');
+      const message = err instanceof Error ? err.message : String(err);
+      return jsonError(502, `无法连接模型服务: ${message}`);
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onClientAbort);
+    }
+  };
+
+  const primaryRes = await attempt(config);
+  if (fallbackConfig && (primaryRes.status === 429 || primaryRes.status >= 500) && !signal?.aborted) {
+    return attempt(fallbackConfig);
   }
+  return primaryRes;
 }

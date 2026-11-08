@@ -41,6 +41,7 @@ export async function POST(req: Request) {
       messages: [{ role: 'user', content: buildTranslateUserContent(text, previousPageTail) }],
       temperature: 0.3,
     },
-    req.signal
+    req.signal,
+    upstream.fallbackConfig
   );
 }
