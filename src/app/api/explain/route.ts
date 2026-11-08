@@ -6,18 +6,23 @@ import { enforceRateLimit } from '@/lib/server/cloudflare';
 const MAX_BODY_BYTES = 256 * 1024;
 const MAX_SELECTED_CHARS = 4_000;
 const MAX_CONTEXT_CHARS = 20_000;
+const MAX_SERVER_KEY_CONTEXT_CHARS = 6_000;
 const MAX_QUESTION_CHARS = 2_000;
 const MAX_HISTORY_ITEMS = 20;
+const MAX_SERVER_KEY_HISTORY_ITEMS = 6;
 const MAX_HISTORY_ITEM_CHARS = 8_000;
+const MAX_SERVER_KEY_HISTORY_ITEM_CHARS = 2_000;
 
-function parseHistory(value: unknown): ChatMessage[] {
+function parseHistory(value: unknown, usingServerKey: boolean): ChatMessage[] {
   if (!Array.isArray(value)) return [];
+  const maxItems = usingServerKey ? MAX_SERVER_KEY_HISTORY_ITEMS : MAX_HISTORY_ITEMS;
+  const maxChars = usingServerKey ? MAX_SERVER_KEY_HISTORY_ITEM_CHARS : MAX_HISTORY_ITEM_CHARS;
   return value
-    .slice(-MAX_HISTORY_ITEMS)
+    .slice(-maxItems)
     .filter((item): item is { role?: unknown; content?: unknown } => !!item && typeof item === 'object')
     .map(item => ({
       role: item.role === 'assistant' ? ('assistant' as const) : ('user' as const),
-      content: asTrimmedString(item.content, MAX_HISTORY_ITEM_CHARS),
+      content: asTrimmedString(item.content, maxChars),
     }))
     .filter(item => item.content);
 }
@@ -32,19 +37,25 @@ export async function POST(req: Request) {
 
   const upstream = resolveUpstream(body);
   if (!upstream.ok) return jsonError(upstream.status, upstream.error);
-  if (upstream.usingServerKey) {
-    const limited = await enforceRateLimit(req, 'LLM_RATE_LIMITER', 'llm');
-    if (limited) return limited;
-  }
 
-  const contextText = asTrimmedString(body.contextText, MAX_CONTEXT_CHARS);
+  const limited = await enforceRateLimit(
+    req,
+    upstream.usingServerKey ? 'LLM_RATE_LIMITER' : 'API_RATE_LIMITER',
+    upstream.usingServerKey ? 'llm' : 'llm-proxy'
+  );
+  if (limited) return limited;
+
+  const contextText = asTrimmedString(
+    body.contextText,
+    upstream.usingServerKey ? MAX_SERVER_KEY_CONTEXT_CHARS : MAX_CONTEXT_CHARS
+  );
 
   return proxyChat(
     upstream.config,
     {
       system: EXPLAIN_SYSTEM_PROMPT,
       messages: [
-        ...parseHistory(body.history),
+        ...parseHistory(body.history, upstream.usingServerKey),
         { role: 'user', content: buildExplainUserPrompt({ selectedText, contextText, question: question || undefined }) },
       ],
       temperature: 0.4,

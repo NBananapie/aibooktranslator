@@ -107,8 +107,30 @@ export function jsonError(status: number, error: string): Response {
 export async function readJsonBody(req: Request, maxBytes: number): Promise<Record<string, unknown> | Response> {
   const declared = Number(req.headers.get('content-length') || 0);
   if (declared > maxBytes) return jsonError(413, '请求体过大');
-  const raw = await req.text();
-  if (raw.length > maxBytes) return jsonError(413, '请求体过大');
+  if (!req.body) return jsonError(400, '请求体为空');
+
+  const reader = req.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value) {
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        return jsonError(413, '请求体过大');
+      }
+      chunks.push(value);
+    }
+  }
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  const raw = new TextDecoder().decode(merged);
   try {
     const parsed: unknown = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {

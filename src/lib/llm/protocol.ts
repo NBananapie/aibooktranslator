@@ -146,29 +146,39 @@ export function toPlainTextStream(
   const encoder = new TextEncoder();
   let buffer = '';
 
-  const emitLine = (line: string, controller: ReadableStreamDefaultController<Uint8Array>) => {
+  const emitLine = (line: string, controller: ReadableStreamDefaultController<Uint8Array>): boolean => {
     const cleaned = line.trim();
-    if (!cleaned.startsWith('data:')) return;
+    if (!cleaned.startsWith('data:')) return false;
     const payload = cleaned.slice(5).trim();
-    if (!payload || payload === '[DONE]') return;
+    if (!payload || payload === '[DONE]') return false;
     const text = extractSseText(payload, gemini);
-    if (text) controller.enqueue(encoder.encode(text));
+    if (!text) return false;
+    controller.enqueue(encoder.encode(text));
+    return true;
   };
 
   return new ReadableStream<Uint8Array>({
+    // 每次 pull 必须至少输出一块或结束流：若 pull 返回时既未 enqueue 也未 close，流不会再次调用 pull 而停滞。
+    // 上游一个网络分片可能不含完整的一行（或只有心跳、空行），因此循环读取直到有输出。
     async pull(controller) {
       try {
-        const { done, value } = await reader.read();
-        if (done) {
-          buffer += decoder.decode();
-          if (buffer) emitLine(buffer, controller);
-          controller.close();
-          return;
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) {
+            buffer += decoder.decode();
+            if (buffer) emitLine(buffer, controller);
+            controller.close();
+            return;
+          }
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() ?? '';
+          let emitted = false;
+          for (const line of lines) {
+            if (emitLine(line, controller)) emitted = true;
+          }
+          if (emitted) return;
         }
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() ?? '';
-        for (const line of lines) emitLine(line, controller);
       } catch (err) {
         controller.error(err);
       }

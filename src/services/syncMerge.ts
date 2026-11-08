@@ -112,7 +112,12 @@ export function hasChanges(changes: LocalChanges): boolean {
 }
 
 /** 合并旧版（v1）云端数据：只补充本地缺失的页和剪藏，不覆盖本地已有内容 */
-export function mergeLegacyIntoRecord(record: HistoryRecord, legacy: LegacyBookData): HistoryRecord {
+export function mergeLegacyIntoRecord(
+  record: HistoryRecord,
+  legacy: LegacyBookData,
+  now = Date.now()
+): HistoryRecord {
+  const stampedAt = Math.max(now, (record.sync?.pushedAt ?? 0) + 1);
   const translations = { ...(record.translations || {}) };
   const translationTimes: Record<number, number> = { ...(record.translationTimes || {}) };
   for (const [pageStr, text] of Object.entries(legacy.translations)) {
@@ -120,16 +125,20 @@ export function mergeLegacyIntoRecord(record: HistoryRecord, legacy: LegacyBookD
     if (!Number.isInteger(page) || page < 1 || typeof text !== 'string' || !text) continue;
     if (!translations[page]) {
       translations[page] = text;
-      translationTimes[page] = legacy.updatedAt;
+      translationTimes[page] = stampedAt;
     }
   }
 
   const existingIds = new Set((record.clips || []).map(c => c.id));
-  const clips = [...(record.clips || []), ...legacy.clips.filter(c => !existingIds.has(c.id))].sort(
+  const addedClips = legacy.clips
+    .filter(c => !existingIds.has(c.id))
+    .map(c => ({ ...c, updatedAt: stampedAt }));
+  const clips = [...(record.clips || []), ...addedClips].sort(
     (a, b) => b.createdAt - a.createdAt
   );
 
   const useLegacyProgress = (!record.lastReadPage || record.lastReadPage <= 1) && (legacy.lastReadPage ?? 0) > 1;
+  const useLegacyTotal = !record.totalPages && (legacy.totalPages ?? 0) > 0;
 
   return {
     ...record,
@@ -138,5 +147,6 @@ export function mergeLegacyIntoRecord(record: HistoryRecord, legacy: LegacyBookD
     clips,
     totalPages: record.totalPages || legacy.totalPages,
     lastReadPage: useLegacyProgress ? legacy.lastReadPage : record.lastReadPage,
+    metaUpdatedAt: useLegacyProgress || useLegacyTotal ? stampedAt : record.metaUpdatedAt,
   };
 }

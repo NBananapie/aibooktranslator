@@ -111,6 +111,10 @@ function getDB(): Promise<IDBDatabase> {
       dbPromise = null;
       reject(request.error);
     };
+    request.onblocked = () => {
+      dbPromise = null;
+      reject(new Error('本地数据库正在被其他标签页占用，请关闭其他标签页后刷新重试'));
+    };
     request.onsuccess = () => {
       const db = request.result;
       // 其他标签页升级数据库时关闭连接，下次调用重新打开
@@ -219,8 +223,17 @@ export async function updateHistoryRecord(
   return updated;
 }
 
+/** 生成单调递增时间戳，避免同一毫秒内连续修改或本地时钟回拨导致 LWW 丢失更新 */
+function nextTimestamp(prev?: number): number {
+  return Math.max(Date.now(), (prev ?? 0) + 1);
+}
+
 export function updateHistoryFilename(id: string, newFilename: string): Promise<HistoryRecord | undefined> {
-  return updateHistoryRecord(id, record => ({ ...record, filename: newFilename, metaUpdatedAt: Date.now() }));
+  return updateHistoryRecord(id, record => ({
+    ...record,
+    filename: newFilename,
+    metaUpdatedAt: nextTimestamp(record.metaUpdatedAt),
+  }));
 }
 
 export function updateHistoryProgress(
@@ -233,7 +246,7 @@ export function updateHistoryProgress(
     if (data.lastReadTime !== undefined) next.lastReadTime = data.lastReadTime;
     if (data.lastReadPage !== undefined && data.lastReadPage !== record.lastReadPage) {
       next.lastReadPage = data.lastReadPage;
-      next.metaUpdatedAt = Date.now();
+      next.metaUpdatedAt = nextTimestamp(record.metaUpdatedAt);
     }
     return next;
   });
@@ -244,24 +257,33 @@ export function setPageTranslation(id: string, page: number, text: string): Prom
   return updateHistoryRecord(id, record => ({
     ...record,
     translations: { ...(record.translations || {}), [page]: text },
-    translationTimes: { ...(record.translationTimes || {}), [page]: Date.now() },
+    translationTimes: {
+      ...(record.translationTimes || {}),
+      [page]: nextTimestamp(record.translationTimes?.[page]),
+    },
   }));
 }
 
 export function addHistoryClip(id: string, clip: ClipItem): Promise<HistoryRecord | undefined> {
-  const now = Date.now();
-  return updateHistoryRecord(id, record => ({
-    ...record,
-    clips: [{ ...clip, updatedAt: now }, ...(record.clips || []).filter(c => c.id !== clip.id)],
-  }));
+  return updateHistoryRecord(id, record => {
+    const prev = (record.clips || []).find(c => c.id === clip.id)?.updatedAt;
+    const updatedAt = nextTimestamp(prev ?? clip.createdAt);
+    return {
+      ...record,
+      clips: [{ ...clip, updatedAt }, ...(record.clips || []).filter(c => c.id !== clip.id)],
+    };
+  });
 }
 
 /** 删除剪藏：保留墓碑记录，便于同步到其他设备 */
 export function deleteHistoryClip(id: string, clipId: string): Promise<HistoryRecord | undefined> {
-  const now = Date.now();
   return updateHistoryRecord(id, record => ({
     ...record,
-    clips: (record.clips || []).map(c => (c.id === clipId ? { ...c, deletedAt: now, updatedAt: now } : c)),
+    clips: (record.clips || []).map(c => {
+      if (c.id !== clipId) return c;
+      const ts = nextTimestamp(c.updatedAt ?? c.createdAt);
+      return { ...c, deletedAt: ts, updatedAt: ts };
+    }),
   }));
 }
 

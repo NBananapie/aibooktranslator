@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
     "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
     "deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
     "upload": "opennextjs-cloudflare build && opennextjs-cloudflare upload",
@@ -33,6 +34,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.4.5",
     "typescript": "^5",
+    "vitest": "4.1.0",
     "wrangler": "4.158.0"
   }
 }

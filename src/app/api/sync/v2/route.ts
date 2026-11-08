@@ -6,6 +6,7 @@
 
 import { sha256Hex } from '@/lib/crypto';
 import { enforceRateLimit, getD1 } from '@/lib/server/cloudflare';
+import { readJsonBody } from '@/lib/server/llmProxy';
 import {
   BOOK_FINGERPRINT_REGEX,
   CLIP_ID_REGEX,
@@ -21,6 +22,12 @@ import {
   SyncPageItem,
   SyncPullResponse,
 } from '@/lib/syncProtocol';
+
+/** 单账户允许同步的书籍上限与总条目（页 + 剪藏）上限，防止恶意刷满存储 */
+const MAX_ACCOUNT_BOOKS = 200;
+const MAX_ACCOUNT_ITEMS = 50_000;
+/** 允许客户端时钟比服务端快的最大容差（超出部分截断为服务端时间） */
+const MAX_FUTURE_SKEW_MS = 60_000;
 
 function jsonError(status: number, error: string): Response {
   return Response.json({ error }, { status });
@@ -194,19 +201,8 @@ export async function POST(req: Request) {
   if (ctx instanceof Response) return ctx;
   const { db, accountId } = ctx;
 
-  const declared = Number(req.headers.get('content-length') || 0);
-  if (declared > MAX_PUSH_BYTES) return jsonError(413, '单次同步数据过大');
-  const raw = await req.text();
-  if (raw.length > MAX_PUSH_BYTES) return jsonError(413, '单次同步数据过大');
-
-  let body: Record<string, unknown>;
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not object');
-    body = parsed as Record<string, unknown>;
-  } catch {
-    return jsonError(400, '非法 JSON 数据格式');
-  }
+  const body = await readJsonBody(req, MAX_PUSH_BYTES);
+  if (body instanceof Response) return body;
 
   const fingerprint = typeof body.bookFingerprint === 'string' ? body.bookFingerprint.toLowerCase() : '';
   if (!BOOK_FINGERPRINT_REGEX.test(fingerprint)) return jsonError(400, '非法书籍指纹');
@@ -218,57 +214,82 @@ export async function POST(req: Request) {
   if (pages.length + clips.length > MAX_PUSH_ITEMS) return jsonError(413, `单次最多推送 ${MAX_PUSH_ITEMS} 条`);
 
   const now = Date.now();
-  const statements: D1PreparedStatement[] = [
-    db
-      .prepare(
-        `INSERT INTO sync_books (account_id, book_fingerprint, meta, meta_updated_at, server_updated_at)
-         VALUES (?, ?, NULL, 0, ?)
-         ON CONFLICT(account_id, book_fingerprint) DO UPDATE SET server_updated_at = excluded.server_updated_at`
-      )
-      .bind(accountId, fingerprint, now),
-  ];
-
-  if (meta) {
-    statements.push(
-      db
-        .prepare(
-          `UPDATE sync_books SET meta = ?, meta_updated_at = ?
-           WHERE account_id = ? AND book_fingerprint = ? AND meta_updated_at < ?`
-        )
-        .bind(meta.content, meta.updatedAt, accountId, fingerprint, meta.updatedAt)
-    );
-  }
-
-  for (const p of pages) {
-    statements.push(
-      db
-        .prepare(
-          `INSERT INTO sync_pages (account_id, book_fingerprint, page, content, updated_at, server_updated_at)
-           VALUES (?, ?, ?, ?, ?, ?)
-           ON CONFLICT(account_id, book_fingerprint, page) DO UPDATE SET
-             content = excluded.content, updated_at = excluded.updated_at, server_updated_at = excluded.server_updated_at
-           WHERE excluded.updated_at > sync_pages.updated_at`
-        )
-        .bind(accountId, fingerprint, p.page, p.content, p.updatedAt, now)
-    );
-  }
-
-  for (const c of clips) {
-    statements.push(
-      db
-        .prepare(
-          `INSERT INTO sync_clips (account_id, book_fingerprint, clip_id, content, deleted, updated_at, server_updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT(account_id, book_fingerprint, clip_id) DO UPDATE SET
-             content = excluded.content, deleted = excluded.deleted,
-             updated_at = excluded.updated_at, server_updated_at = excluded.server_updated_at
-           WHERE excluded.updated_at > sync_clips.updated_at`
-        )
-        .bind(accountId, fingerprint, c.id, c.content, c.deleted ? 1 : 0, c.updatedAt, now)
-    );
-  }
+  const clampTime = (t: number) => (t > now + MAX_FUTURE_SKEW_MS ? now : t);
 
   try {
+    const quotaRow = await db
+      .prepare(
+        `SELECT
+           (SELECT COUNT(*) FROM sync_books WHERE account_id = ?) AS books,
+           (SELECT COUNT(*) FROM sync_pages WHERE account_id = ?) AS pages,
+           (SELECT COUNT(*) FROM sync_clips WHERE account_id = ?) AS clips,
+           EXISTS(SELECT 1 FROM sync_books WHERE account_id = ? AND book_fingerprint = ?) AS book_exists`
+      )
+      .bind(accountId, accountId, accountId, accountId, fingerprint)
+      .first<{ books: number; pages: number; clips: number; book_exists: number }>();
+
+    if (quotaRow) {
+      if (!quotaRow.book_exists && quotaRow.books >= MAX_ACCOUNT_BOOKS) {
+        return jsonError(413, `云端同步书籍数量已达上限（${MAX_ACCOUNT_BOOKS} 本）`);
+      }
+      if (quotaRow.pages + quotaRow.clips + pages.length + clips.length > MAX_ACCOUNT_ITEMS) {
+        return jsonError(413, '云端同步存储条目数已达账户上限');
+      }
+    }
+
+    const statements: D1PreparedStatement[] = [
+      db
+        .prepare(
+          `INSERT INTO sync_books (account_id, book_fingerprint, meta, meta_updated_at, server_updated_at)
+           VALUES (?, ?, NULL, 0, ?)
+           ON CONFLICT(account_id, book_fingerprint) DO UPDATE SET server_updated_at = excluded.server_updated_at`
+        )
+        .bind(accountId, fingerprint, now),
+    ];
+
+    if (meta) {
+      const metaTime = clampTime(meta.updatedAt);
+      statements.push(
+        db
+          .prepare(
+            `UPDATE sync_books SET meta = ?, meta_updated_at = ?
+             WHERE account_id = ? AND book_fingerprint = ? AND meta_updated_at < ?`
+          )
+          .bind(meta.content, metaTime, accountId, fingerprint, metaTime)
+      );
+    }
+
+    for (const p of pages) {
+      const pageTime = clampTime(p.updatedAt);
+      statements.push(
+        db
+          .prepare(
+            `INSERT INTO sync_pages (account_id, book_fingerprint, page, content, updated_at, server_updated_at)
+             VALUES (?, ?, ?, ?, ?, ?)
+             ON CONFLICT(account_id, book_fingerprint, page) DO UPDATE SET
+               content = excluded.content, updated_at = excluded.updated_at, server_updated_at = excluded.server_updated_at
+             WHERE excluded.updated_at > sync_pages.updated_at`
+          )
+          .bind(accountId, fingerprint, p.page, p.content, pageTime, now)
+      );
+    }
+
+    for (const c of clips) {
+      const clipTime = clampTime(c.updatedAt);
+      statements.push(
+        db
+          .prepare(
+            `INSERT INTO sync_clips (account_id, book_fingerprint, clip_id, content, deleted, updated_at, server_updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(account_id, book_fingerprint, clip_id) DO UPDATE SET
+               content = excluded.content, deleted = excluded.deleted,
+               updated_at = excluded.updated_at, server_updated_at = excluded.server_updated_at
+             WHERE excluded.updated_at > sync_clips.updated_at`
+          )
+          .bind(accountId, fingerprint, c.id, c.content, c.deleted ? 1 : 0, clipTime, now)
+      );
+    }
+
     await db.batch(statements);
     return Response.json({ success: true, serverTime: now });
   } catch (err) {

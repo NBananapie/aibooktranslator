@@ -10,6 +10,7 @@ const BUILTIN_RESULT_HOSTS = ['aistudio-app.com', 'aistudio.baidu.com', 'bcebos.
 /** Base64 图片最大长度，约对应 9 MB 原始图片 */
 const MAX_IMAGE_BASE64_CHARS = 12 * 1024 * 1024;
 const MAX_BODY_BYTES = MAX_IMAGE_BASE64_CHARS + 64 * 1024;
+const MAX_RESULT_BYTES = 10 * 1024 * 1024;
 const POLL_INTERVAL_MS = 1200;
 const POLL_MAX_TIMES = 20;
 const QUEUE_FULL_CODE = 10010;
@@ -154,7 +155,11 @@ async function fetchResultFile(rawUrl: unknown, kind: 'text' | 'json'): Promise<
   if (!url) return null;
   const res = await fetch(url);
   if (!res.ok) return null;
-  return kind === 'text' ? res.text() : res.json();
+  const declared = Number(res.headers.get('content-length') || 0);
+  if (declared > MAX_RESULT_BYTES) return null;
+  const text = await res.text();
+  if (text.length > MAX_RESULT_BYTES) return null;
+  return kind === 'text' ? text : JSON.parse(text);
 }
 
 /** 提交飞桨 OCR 作业并轮询结果；队列满时依次尝试候选模型 */
@@ -272,7 +277,9 @@ export async function POST(req: Request) {
   if (!image) return jsonError(400, '未提供图片数据');
   if (image.length > MAX_IMAGE_BASE64_CHARS) return jsonError(413, '图片过大，请降低渲染倍率后重试');
 
-  const token = (typeof body.apiToken === 'string' && body.apiToken.trim()) || process.env.PADDLEOCR_ACCESS_TOKEN?.trim();
+  const clientToken = typeof body.apiToken === 'string' ? body.apiToken.trim() : '';
+  const serverToken = process.env.PADDLEOCR_ACCESS_TOKEN?.trim() || '';
+  const token = clientToken || serverToken;
   if (!token) {
     return jsonError(
       401,
@@ -280,7 +287,18 @@ export async function POST(req: Request) {
     );
   }
 
-  const rawApiUrl = typeof body.apiUrl === 'string' && body.apiUrl.trim() ? body.apiUrl : DEFAULT_OCR_JOBS_URL;
+  const usingServerToken = !clientToken;
+  if (usingServerToken) {
+    const llmLimited = await enforceRateLimit(req, 'LLM_RATE_LIMITER', 'ocr-server');
+    if (llmLimited) return llmLimited;
+  }
+
+  // 使用服务端 Token 时忽略客户端传入的 apiUrl，防止服务端凭证被发往白名单子域下的非官方应用
+  const rawApiUrl = usingServerToken
+    ? process.env.PADDLEOCR_API_URL?.trim() || DEFAULT_OCR_JOBS_URL
+    : typeof body.apiUrl === 'string' && body.apiUrl.trim()
+      ? body.apiUrl
+      : DEFAULT_OCR_JOBS_URL;
   const jobsUrl = checkUrl(rawApiUrl, [...BUILTIN_OCR_HOSTS, ...extraHosts()]);
   if (!jobsUrl) {
     return jsonError(400, 'OCR 接口地址不在允许列表内（仅支持 https 的飞桨 AI Studio 域名）');

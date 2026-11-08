@@ -6,7 +6,7 @@
  */
 
 import { ClipItem, HistoryRecord, getHistoryRecord, updateHistoryRecord } from '@/lib/db';
-import { decryptLegacyV1, decryptV2, deriveSyncKeys, encryptV2, isStrongSyncKey, SyncKeys } from '@/lib/crypto';
+import { decryptLegacyV1, decryptV2, deriveSyncKeys, encryptV2, isStrongSyncKey, sha256Hex, SyncKeys } from '@/lib/crypto';
 import {
   BookMetaPlain,
   ClipPlain,
@@ -102,26 +102,25 @@ function toLegacyClips(raw: unknown): ClipItem[] {
 async function migrateLegacy(record: HistoryRecord, syncKey: string): Promise<void> {
   if (record.sync?.legacyChecked || !record.fingerprint) return;
 
+  const keyHash = await sha256Hex(syncKey.trim());
   const res = await fetch(`${LEGACY_ENDPOINT}?hash=${encodeURIComponent(record.fingerprint)}`, {
-    headers: authHeaders(syncKey.trim()),
+    headers: authHeaders(keyHash),
   });
-  // 服务不可用时下次再试；其他情况（含无旧数据）视为已检查
-  if (res.status >= 500) return;
+  // 仅当接口明确返回 200 时才标记为已检查，避免 429/5xx 等临时错误导致永久跳过旧数据迁移
+  if (!res.ok) return;
 
   let legacy: LegacyBookData | null = null;
-  if (res.ok) {
-    const data = (await res.json()) as LegacyRecordResponse;
-    if (data.record) {
-      const translations = await decryptLegacyV1(data.record.translations, syncKey);
-      const clips = await decryptLegacyV1(data.record.clips, syncKey);
-      legacy = {
-        translations: translations && typeof translations === 'object' ? (translations as Record<number, string>) : {},
-        clips: toLegacyClips(clips),
-        lastReadPage: data.record.lastReadPage,
-        totalPages: data.record.totalPages,
-        updatedAt: data.record.updatedAt || Date.now(),
-      };
-    }
+  const data = (await res.json()) as LegacyRecordResponse;
+  if (data.record) {
+    const translations = await decryptLegacyV1(data.record.translations, syncKey);
+    const clips = await decryptLegacyV1(data.record.clips, syncKey);
+    legacy = {
+      translations: translations && typeof translations === 'object' ? (translations as Record<number, string>) : {},
+      clips: toLegacyClips(clips),
+      lastReadPage: data.record.lastReadPage,
+      totalPages: data.record.totalPages,
+      updatedAt: data.record.updatedAt || Date.now(),
+    };
   }
 
   await updateHistoryRecord(record.id, r => ({
@@ -140,12 +139,14 @@ async function pull(record: HistoryRecord, keys: SyncKeys): Promise<void> {
   const data = (await res.json()) as SyncPullResponse;
 
   const remote: RemoteChanges = { meta: null, pages: [], clips: [] };
+  let hasDecryptError = false;
 
   if (data.meta) {
     try {
       const meta = await decryptV2<BookMetaPlain>(data.meta.content, keys.encKey, aad.meta(fp));
       remote.meta = { ...meta, updatedAt: data.meta.updatedAt };
     } catch (err) {
+      hasDecryptError = true;
       console.warn('云端书籍信息解密失败', err);
     }
   }
@@ -155,6 +156,7 @@ async function pull(record: HistoryRecord, keys: SyncKeys): Promise<void> {
       const text = await decryptV2<string>(p.content, keys.encKey, aad.page(fp, p.page));
       remote.pages.push({ page: p.page, text, updatedAt: p.updatedAt });
     } catch (err) {
+      hasDecryptError = true;
       console.warn(`云端第 ${p.page} 页译文解密失败`, err);
     }
   }
@@ -168,13 +170,17 @@ async function pull(record: HistoryRecord, keys: SyncKeys): Promise<void> {
       const plain = await decryptV2<ClipPlain>(c.content, keys.encKey, aad.clip(fp, c.id));
       remote.clips.push({ ...plain, id: c.id, updatedAt: c.updatedAt });
     } catch (err) {
+      hasDecryptError = true;
       console.warn('云端剪藏解密失败', err);
     }
   }
 
   await updateHistoryRecord(record.id, r => ({
     ...mergeRemoteIntoRecord(r, remote),
-    sync: { ...r.sync, pulledAt: Math.max(0, data.serverTime - PULL_OVERLAP_MS) },
+    sync: {
+      ...r.sync,
+      pulledAt: hasDecryptError ? r.sync?.pulledAt : Math.max(0, data.serverTime - PULL_OVERLAP_MS),
+    },
   }));
 }
 
@@ -295,11 +301,11 @@ export function schedulePush(recordId: string, syncKey: string, delay = PUSH_DEB
 /** 云端书架：v2 书籍 + 尚未迁移的旧版书籍 */
 export async function fetchCloudBookshelf(syncKey: string): Promise<CloudBookMeta[]> {
   if (!isStrongSyncKey(syncKey)) return [];
-  const keys = await deriveSyncKeys(syncKey);
+  const [keys, keyHash] = await Promise.all([deriveSyncKeys(syncKey), sha256Hex(syncKey.trim())]);
 
   const [v2Res, legacyRes] = await Promise.all([
     fetch(V2_ENDPOINT, { headers: authHeaders(keys.authToken) }),
-    fetch(LEGACY_ENDPOINT, { headers: authHeaders(syncKey.trim()) }).catch(() => null),
+    fetch(LEGACY_ENDPOINT, { headers: authHeaders(keyHash) }).catch(() => null),
   ]);
   if (!v2Res.ok) throw new Error(await readError(v2Res));
 
