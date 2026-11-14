@@ -55,6 +55,7 @@ export interface ReaderHeaderProps {
   onChangePreloadCount: (count: PreloadCountOption) => void;
   isPreTranslating: boolean;
   preloadProgress: { done: number; total: number } | null;
+  isLookaheadCached: boolean;
   onTranslateCurrentPage: () => void;
 
   // Typography
@@ -120,6 +121,7 @@ export function ReaderHeader({
   onChangePreloadCount,
   isPreTranslating,
   preloadProgress,
+  isLookaheadCached,
   onTranslateCurrentPage,
   fontSize,
   onChangeFontSize,
@@ -180,7 +182,9 @@ export function ReaderHeader({
     ? `预读中 ${preloadProgress.done}/${preloadProgress.total}`
     : autoTranslate
       ? preloadCount > 0
-        ? `自动连译 +${preloadCount}页`
+        ? isLookaheadCached
+          ? '自动连译 · 已翻译'
+          : `自动连译 +${preloadCount}页`
         : '自动连译'
       : '手动翻译';
 
@@ -196,6 +200,7 @@ export function ReaderHeader({
           className={styles.backShelfBtn}
           onClick={onBackHome}
           data-tooltip="返回书架"
+          data-tooltip-align="start"
         >
           <ArrowLeft size={14} />
           <span>书架</span>

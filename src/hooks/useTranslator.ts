@@ -11,6 +11,7 @@ import { consumeTextStream, readErrorResponse } from '@/lib/llm/protocol';
 import { extractPdfTextWithHierarchy, parseTranslationOutput } from '@/services/alignmentEngine';
 import { analyzePageLayout } from '@/services/layoutAnalysisEngine';
 import { schedulePush } from '@/services/cloudSyncService';
+import { getLookaheadPagesToPreload } from '@/lib/pageRanges';
 
 export interface UseTranslatorOptions {
   file: File | null;
@@ -72,7 +73,7 @@ export function useTranslator(options: UseTranslatorOptions) {
   const [noTextPage, setNoTextPage] = useState<number | null>(null);
   const [pageError, setPageError] = useState<PageMessage | null>(null);
   const [autoTranslate, setAutoTranslate] = useState<boolean>(false);
-  const [isPreTranslating, setIsPreTranslating] = useState<boolean>(false);
+  const [preloadingPages, setPreloadingPages] = useState<number[] | null>(null);
   const [preloadProgress, setPreloadProgress] = useState<{ total: number; done: number }>({ total: 0, done: 0 });
 
   const translationCache = useMemo(() => dbRecord?.translations ?? {}, [dbRecord?.translations]);
@@ -80,6 +81,7 @@ export function useTranslator(options: UseTranslatorOptions) {
   const currentPageRef = useRef<number>(pageNumber);
   const abortControllerRef = useRef<AbortController | null>(null);
   const preloadAbortRef = useRef<AbortController | null>(null);
+  const preloadTargetPagesRef = useRef<number[]>([]);
   const recordId = dbRecord?.id;
 
   useEffect(() => {
@@ -247,20 +249,29 @@ export function useTranslator(options: UseTranslatorOptions) {
     [file, pdfDocument, pageNumber, getPdfDoc, executeTranslateText]
   );
 
-  /** 后台预翻译后续页面（跳过已有译文与无文本页面），可被取消 */
+  /** 后台预翻译后续窗口页面（仅检查未来 maxCount 页，跳过已有译文与无文本页面），可被取消 */
   const preTranslatePipeline = useCallback(
     async (startPage: number, maxCount = preloadCount) => {
-      if (maxCount <= 0 || (!file && !pdfDocument) || preloadAbortRef.current) return;
-
-      const pagesToPreload: number[] = [];
-      for (let p = startPage + 1; p <= numPages && pagesToPreload.length < maxCount; p++) {
-        if (!translationCacheRef.current[p]) pagesToPreload.push(p);
+      if (
+        maxCount <= 0 ||
+        (!file && !pdfDocument) ||
+        (preloadAbortRef.current && !preloadAbortRef.current.signal.aborted)
+      ) {
+        return;
       }
+
+      const pagesToPreload = getLookaheadPagesToPreload(
+        startPage,
+        numPages,
+        maxCount,
+        translationCacheRef.current
+      );
       if (pagesToPreload.length === 0) return;
 
       const controller = new AbortController();
       preloadAbortRef.current = controller;
-      setIsPreTranslating(true);
+      preloadTargetPagesRef.current = pagesToPreload;
+      setPreloadingPages(pagesToPreload);
       setPreloadProgress({ total: pagesToPreload.length, done: 0 });
 
       try {
@@ -288,8 +299,11 @@ export function useTranslator(options: UseTranslatorOptions) {
       } catch (err) {
         if (!isAbortError(err)) console.error('Pipeline pre-translation error:', err);
       } finally {
-        if (preloadAbortRef.current === controller) preloadAbortRef.current = null;
-        setIsPreTranslating(false);
+        if (preloadAbortRef.current === controller) {
+          preloadAbortRef.current = null;
+          preloadTargetPagesRef.current = [];
+          setPreloadingPages(null);
+        }
       }
     },
     [preloadCount, file, pdfDocument, numPages, getPdfDoc, requestTranslation, persistTranslation]
@@ -314,9 +328,28 @@ export function useTranslator(options: UseTranslatorOptions) {
   });
 
   useEffect(() => {
+    if (!file || !autoTranslate || preloadCount <= 0) {
+      preloadAbortRef.current?.abort();
+    } else if (preloadAbortRef.current && !preloadAbortRef.current.signal.aborted) {
+      const windowStart = pageNumber + 1;
+      const windowEnd = Math.min(numPages, pageNumber + preloadCount);
+      const hasOverlap = preloadTargetPagesRef.current.some(
+        p => p >= windowStart && p <= windowEnd
+      );
+      if (!hasOverlap) {
+        preloadAbortRef.current.abort();
+      }
+    }
     if (!file || !autoTranslate) return;
     return onAutoTranslatePage(pageNumber, preloadCount);
-  }, [file, pageNumber, autoTranslate, preloadCount]);
+  }, [file, pageNumber, numPages, autoTranslate, preloadCount]);
+
+  const isPreTranslating = useMemo(() => {
+    if (!file || !autoTranslate || preloadCount <= 0 || !preloadingPages) return false;
+    const windowStart = pageNumber + 1;
+    const windowEnd = Math.min(numPages, pageNumber + preloadCount);
+    return preloadingPages.some(p => p >= windowStart && p <= windowEnd);
+  }, [file, autoTranslate, preloadCount, preloadingPages, pageNumber, numPages]);
 
   const cachedText = translationCache[pageNumber];
   const displayedText = useMemo(() => {

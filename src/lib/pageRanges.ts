@@ -67,3 +67,36 @@ export function parsePageRangeInput(raw: string, maxPage: number, maxCount = 40)
 
   return Array.from(result).sort((a, b) => a - b);
 }
+
+/**
+ * 计算当前页后方预读窗口 [startPage + 1, min(numPages, startPage + preloadCount)] 内尚无缓存的页码列表。
+ */
+export function getLookaheadPagesToPreload(
+  startPage: number,
+  numPages: number,
+  preloadCount: number,
+  translationCache: Record<number, string>
+): number[] {
+  if (preloadCount <= 0 || numPages <= 0 || startPage >= numPages) return [];
+  const windowEnd = Math.min(numPages, startPage + preloadCount);
+  const pages: number[] = [];
+  for (let p = startPage + 1; p <= windowEnd; p++) {
+    if (!translationCache[p]) {
+      pages.push(p);
+    }
+  }
+  return pages;
+}
+
+/**
+ * 判断当前页后方预读窗口内的页面是否已全部缓存译文。
+ */
+export function isLookaheadWindowCached(
+  pageNumber: number,
+  numPages: number,
+  preloadCount: number,
+  translationCache: Record<number, string>
+): boolean {
+  if (preloadCount <= 0 || numPages <= 0 || pageNumber >= numPages) return false;
+  return getLookaheadPagesToPreload(pageNumber, numPages, preloadCount, translationCache).length === 0;
+}

@@ -32,6 +32,7 @@ export function ProgressRing({
       className={`${styles.progressRingWrapper} ${className || ''}`}
       style={{ width: size, height: size, ...style }}
       data-tooltip={tooltip || `阅读进度: ${validPercent}%`}
+      data-tooltip-align="start"
     >
       <svg className={styles.progressRingSvg} width={size} height={size}>
         <circle

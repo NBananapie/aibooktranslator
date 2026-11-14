@@ -649,12 +649,13 @@
   border: 1px solid var(--card-border);
   background: var(--card-bg);
   box-shadow: var(--shadow-sm);
-  overflow: hidden;
   cursor: pointer;
   transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
 }
 
-.bookCard:hover {
+.bookCard:hover,
+.bookCard:focus-within {
+  z-index: 10;
   border-color: var(--card-border-hover);
   box-shadow: var(--shadow-md);
   transform: translateY(-1px);
@@ -668,6 +669,8 @@
 .bookSpine {
   width: 5px;
   flex-shrink: 0;
+  border-radius: 10px 0 0 10px;
+  overflow: hidden;
   background: var(--surface-2);
   display: flex;
   flex-direction: column;

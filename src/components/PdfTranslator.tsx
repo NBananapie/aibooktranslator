@@ -7,6 +7,7 @@ import { useAppContext } from '@/context/AppContext';
 import { useToast } from '@/components/Toast';
 import { useRouter } from 'next/navigation';
 import { ClipItem, activeClips } from '@/lib/db';
+import { isLookaheadWindowCached } from '@/lib/pageRanges';
 import { exportTranslationsAsMarkdown } from '@/services/exportService';
 import { capturePageCanvasAsBase64, requestPaddleOcr } from '@/services/ocrService';
 import { schedulePush, syncBook } from '@/services/cloudSyncService';
@@ -382,6 +383,9 @@ export default function PdfTranslator({ fileId }: { fileId: string }) {
   };
 
   const cachedPagesCount = Object.keys(translationCache).length;
+  const isLookaheadCached =
+    autoTranslate &&
+    isLookaheadWindowCached(pageNumber, numPages, preloadCount, translationCache);
 
   return (
     <div className={styles.readerShell}>
@@ -416,6 +420,7 @@ export default function PdfTranslator({ fileId }: { fileId: string }) {
         onChangePreloadCount={setPreloadCount}
         isPreTranslating={isPreTranslating}
         preloadProgress={preloadProgress}
+        isLookaheadCached={isLookaheadCached}
         onTranslateCurrentPage={() => translateCurrentPage(true)}
         fontSize={fontSize}
         onChangeFontSize={setFontSize}

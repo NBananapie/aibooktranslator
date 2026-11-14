@@ -258,8 +258,19 @@ a:hover {
   z-index: 99998;
 }
 
-[data-tooltip]:hover::after {
+[data-tooltip]:hover::after,
+[data-tooltip]:focus-visible::after {
   opacity: 1;
   visibility: visible;
   transform: translateX(-50%) translateY(0);
+}
+
+[data-tooltip][data-tooltip-align="start"]::after {
+  left: 0;
+  transform: translateY(-2px);
+}
+
+[data-tooltip][data-tooltip-align="start"]:hover::after,
+[data-tooltip][data-tooltip-align="start"]:focus-visible::after {
+  transform: translateY(0);
 }

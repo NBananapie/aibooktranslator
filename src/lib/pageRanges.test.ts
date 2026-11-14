@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { formatPageRanges, parsePageRangeInput } from './pageRanges';
+import {
+  formatPageRanges,
+  getLookaheadPagesToPreload,
+  isLookaheadWindowCached,
+  parsePageRangeInput,
+} from './pageRanges';
 import { buildExplainUserPrompt } from './llm/prompts';
 
 describe('formatPageRanges', () => {
@@ -54,5 +59,27 @@ describe('buildExplainUserPrompt', () => {
     expect(prompt).not.toContain('关联划词选段');
     expect(prompt).toContain('=== 第 41 页 ===');
     expect(prompt).toContain('=== 第 42 页 ===');
+  });
+});
+
+describe('getLookaheadPagesToPreload & isLookaheadWindowCached', () => {
+  it('limits preload candidates strictly to the lookahead window without scanning past cached pages', () => {
+    const cache = { 85: '已译85', 86: '已译86' };
+    expect(getLookaheadPagesToPreload(84, 179, 2, cache)).toEqual([]);
+    expect(isLookaheadWindowCached(84, 179, 2, cache)).toBe(true);
+  });
+
+  it('returns only uncached pages within the window and reports false when any is missing', () => {
+    const cache = { 85: '已译85', 87: '已译87' };
+    expect(getLookaheadPagesToPreload(84, 179, 4, cache)).toEqual([86, 88]);
+    expect(isLookaheadWindowCached(84, 179, 4, cache)).toBe(false);
+  });
+
+  it('handles disabled preload or last page safely', () => {
+    const cache = { 10: '已译10' };
+    expect(getLookaheadPagesToPreload(9, 10, 2, cache)).toEqual([]);
+    expect(isLookaheadWindowCached(9, 10, 2, cache)).toBe(true);
+    expect(isLookaheadWindowCached(10, 10, 2, cache)).toBe(false);
+    expect(isLookaheadWindowCached(5, 10, 0, cache)).toBe(false);
   });
 });
