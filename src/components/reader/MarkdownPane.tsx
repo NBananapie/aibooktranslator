@@ -5,14 +5,12 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import styles from '@/app/page.module.css';
 import { ClipItem } from '@/lib/db';
-import { ScanText, Zap } from 'lucide-react';
+import { ReaderFontFamily } from '@/context/AppContext';
+import { ScanText, Sparkles, RefreshCw, Settings, AlertCircle } from 'lucide-react';
 import { isValidClippedText } from '@/hooks/useTextSelection';
-import { MarkdownHeader, MarkdownHeaderProps } from './MarkdownHeader';
-import { ClipsDrawer, ClipsDrawerProps } from './ClipsDrawer';
 
 const REMARK_PLUGINS = [remarkGfm];
 
-/** react-markdown 传给自定义组件的属性：原生元素属性 + 语法树节点 */
 type MdProps<T extends keyof React.JSX.IntrinsicElements> = React.ComponentPropsWithoutRef<T> & { node?: unknown };
 type HighlightTag = 'p' | 'h1' | 'h2' | 'h3' | 'h4' | 'li' | 'blockquote';
 
@@ -56,7 +54,6 @@ function wrapNodesWithRanges(
     const nodeEnd = nodeStart + textStr.length;
     tracker.offset = nodeEnd;
 
-    // 寻找与当前文本节点在区间上相交的所有剪藏范围
     const overlapping = ranges.filter(r => r.start < nodeEnd && r.end > nodeStart);
     if (overlapping.length === 0) {
       return textStr;
@@ -84,7 +81,7 @@ function wrapNodesWithRanges(
               e.stopPropagation();
               onClippedSpanClick?.(e, r.clip);
             }}
-            title={`已剪藏（点击唤起微岛）: ${r.clip.text.slice(0, 36)}...`}
+            title={`已存书摘（点击操作）: ${r.clip.text.slice(0, 36)}`}
           >
             {clippedSlice}
           </span>
@@ -146,7 +143,6 @@ const BlockContentRenderer = React.memo(
           const clipTrimmed = clipRaw.trim();
           if (!clipTrimmed) continue;
 
-          // 1. 直接匹配子串
           let idx = fullText.indexOf(clipRaw);
           let matchLen = clipRaw.length;
           if (idx === -1) {
@@ -154,7 +150,6 @@ const BlockContentRenderer = React.memo(
             matchLen = clipTrimmed.length;
           }
 
-          // 2. 整段剪藏或大段选区覆盖（解决整段剪藏或含加粗跨节点匹配失灵）
           if (idx === -1 && fullTrimmed) {
             if (clipTrimmed === fullTrimmed || clipTrimmed.includes(fullTrimmed)) {
               const startInFull = fullText.indexOf(fullTrimmed);
@@ -165,7 +160,6 @@ const BlockContentRenderer = React.memo(
             }
           }
 
-          // 3. 空白与换行折叠容错匹配
           if (idx === -1 && fullTrimmed) {
             const normFull = fullText.replace(/\s+/g, ' ');
             const normClip = clipTrimmed.replace(/\s+/g, ' ');
@@ -204,8 +198,6 @@ const BlockContentRenderer = React.memo(
         }
 
         if (ranges.length === 0) return children;
-
-        // 按起始位置升序排序
         ranges.sort((a, b) => a.start - b.start);
 
         const tracker = { offset: 0 };
@@ -215,7 +207,6 @@ const BlockContentRenderer = React.memo(
     );
 
     const customComponents = useMemo(() => {
-      /** 生成会在文本中标记已剪藏片段的块级元素；去掉 react-markdown 传入的 node 属性，避免写到 DOM 上 */
       const withClipHighlight = <T extends HighlightTag>(Tag: T) => {
         function Highlighted(props: MdProps<T>) {
           const rest: Record<string, unknown> = { ...props };
@@ -238,7 +229,7 @@ const BlockContentRenderer = React.memo(
 
     return (
       <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={customComponents}>
-        {text || '翻译中...'}
+        {text}
       </ReactMarkdown>
     );
   },
@@ -249,14 +240,29 @@ const BlockContentRenderer = React.memo(
   }
 );
 
-export interface MarkdownPaneProps extends MarkdownHeaderProps, ClipsDrawerProps {
+export interface MarkdownPaneProps {
   leftPaneWidth: number;
+  isImmersive: boolean;
+  viewMode: 'translation' | 'ocr_source';
+  isTranslating: boolean;
+  isOcrLoading: boolean;
+  isNoTextPage: boolean;
   displayedText: string;
   fullTextThinking: boolean;
   error: string;
   ocrText?: string;
   pageNumber: number;
+  fontSize: number;
+  readerFont: ReaderFontFamily;
+  fullWidthReading: boolean;
+  autoTranslate: boolean;
+  clips: ClipItem[];
+  onTranslateCurrentPage: () => void;
+  onEnableAutoTranslateAndRun: () => void;
+  onRunOcrAndTranslate: () => void;
+  onRunOcrOnly: () => void;
   onExecuteTranslateText: (text: string, page: number) => void;
+  onOpenSettings: (tab?: 'llm' | 'ocr' | 'sync') => void;
   onMarkdownSelection: () => void;
   onClippedSpanClick: (e: React.MouseEvent, clip: ClipItem) => void;
 }
@@ -267,166 +273,177 @@ export function MarkdownPane({
   viewMode,
   isTranslating,
   isOcrLoading,
+  isNoTextPage,
   displayedText,
   fullTextThinking,
   error,
   ocrText,
   pageNumber,
+  fontSize,
+  readerFont,
   fullWidthReading,
+  autoTranslate,
   clips,
+  onTranslateCurrentPage,
+  onEnableAutoTranslateAndRun,
+  onRunOcrAndTranslate,
+  onRunOcrOnly,
   onExecuteTranslateText,
+  onOpenSettings,
   onMarkdownSelection,
   onClippedSpanClick,
-  isOpen,
-  toggleBtnRef,
-  onToggle,
-  onClose,
-  onCopyAll,
-  onExportMarkdown,
-  onJumpToPage,
-  onCopyClip,
-  onDeleteClip,
-  fontSize = 16,
-  setFontSize,
-  ...headerProps
 }: MarkdownPaneProps) {
   const currentPageClips = useMemo(
     () => clips.filter(c => c.pageNumber === pageNumber && isValidClippedText(c.text)),
     [clips, pageNumber]
   );
 
+  const articleClasses = [
+    styles.markdownArticle,
+    readerFont === 'serif' ? styles.markdownSerif : styles.markdownSans,
+    isImmersive ? styles.markdownImmersive : '',
+    fullWidthReading ? styles.markdownFullWidth : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+
   return (
     <div
       className={styles.rightPane}
       style={{
-        flexBasis: isImmersive ? '100%' : `calc(${100 - leftPaneWidth}% - 6px)`,
-        flexGrow: isImmersive ? 1 : 0,
-        flexShrink: 0,
+        flexBasis: isImmersive ? '100%' : `calc(${100 - leftPaneWidth}% - 2px)`,
+        flexGrow: 1,
+        flexShrink: 1,
       }}
     >
-      <MarkdownHeader
-        fontSize={fontSize}
-        setFontSize={setFontSize}
-        isImmersive={isImmersive}
-        viewMode={viewMode}
-        isTranslating={isTranslating}
-        isOcrLoading={isOcrLoading}
-        fullWidthReading={fullWidthReading}
-        {...headerProps}
-      />
-
-      <div className={styles.rightPaneBody}>
-        <div
-          className={`${styles.markdownWrapper} ${styles.pageFadeIn}`}
-          onMouseUp={onMarkdownSelection}
-          onKeyUp={onMarkdownSelection}
-          style={{ '--reader-font-size': `${fontSize}px` } as React.CSSProperties}
-        >
-          {isTranslating && !displayedText ? (
-            <div className={styles.loadingOverlay}>
-              <div className={styles.spinner} />
-              <p>{fullTextThinking ? 'AI 正在深度思考中...' : '正在连接 AI 引擎流式输出...'}</p>
+      <div
+        className={`${styles.markdownScroll} ${styles.pageFadeIn}`}
+        onMouseUp={onMarkdownSelection}
+        onKeyUp={onMarkdownSelection}
+        style={{ '--reader-font-size': `${fontSize}px` } as React.CSSProperties}
+      >
+        {isTranslating && !displayedText ? (
+          <div className={styles.loadingOverlay}>
+            <div className={styles.spinner} />
+            <p>{fullTextThinking ? '正在研读原文语境并推敲译文...' : '正在流式生成出版级中文译文...'}</p>
+          </div>
+        ) : isOcrLoading ? (
+          <div className={styles.loadingOverlay}>
+            <div className={styles.spinner} />
+            <p>正在通过 PaddleOCR 解析扫描版面、公式与表格...</p>
+          </div>
+        ) : error ? (
+          <div className={styles.errorCard}>
+            <div className={styles.errorCardHeader}>
+              <AlertCircle size={16} />
+              <span>第 {pageNumber} 页处理遇到问题</span>
             </div>
-          ) : isOcrLoading ? (
-            <div className={styles.loadingOverlay}>
-              <div className={styles.spinner} />
-              <p>百度飞桨 PaddleOCR 正在解析页面版面、表格与文字...</p>
-            </div>
-          ) : error ? (
-            <div
-              style={{
-                color: 'var(--accent-rose)',
-                padding: '16px',
-                background: 'rgba(244, 63, 94, 0.1)',
-                borderRadius: '8px',
-                border: '1px solid var(--accent-rose)',
-                fontSize: '14px',
-              }}
-            >
-              {error}
-            </div>
-          ) : viewMode === 'ocr_source' && ocrText ? (
-            <div
-              className={styles.ocrContent}
-              style={{
-                maxWidth: isImmersive ? (fullWidthReading ? '100%' : '900px') : 'none',
-                margin: isImmersive ? '0 auto' : '0',
-                fontSize: `${fontSize}px`,
-                lineHeight: isImmersive ? '2.0' : '1.85',
-                transition: 'font-size 0.2s ease, max-width 0.25s ease',
-              }}
-            >
-              <div
-                style={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '8px',
-                  marginBottom: '14px',
-                  borderBottom: '1px solid var(--glass-border)',
-                  paddingBottom: '10px',
-                }}
+            <p className={styles.errorCardMsg}>{error}</p>
+            <div className={styles.stateCardActions}>
+              <button type="button" className={styles.btn} onClick={onTranslateCurrentPage}>
+                <RefreshCw size={13} />
+                <span>重试本页</span>
+              </button>
+              <button
+                type="button"
+                className={styles.btnSecondary}
+                onClick={() => onOpenSettings('llm')}
               >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span
-                    style={{
-                      fontSize: '13.5px',
-                      color: 'var(--primary)',
-                      fontWeight: 600,
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '6px',
-                    }}
-                  >
-                    <ScanText size={15} /> 百度飞桨 PaddleOCR-VL 结构化识别
-                  </span>
-                  <button
-                    className={styles.btn}
-                    style={{ padding: '4px 10px', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '5px' }}
-                    onClick={() => onExecuteTranslateText(ocrText, pageNumber)}
-                  >
-                    <Zap size={13} /> 将此 OCR 内容翻译为中文
-                  </button>
-                </div>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', fontSize: '11px', color: 'var(--muted)' }}>
-                  <span className={styles.badge}>多模态版面解析</span>
-                  <span className={styles.badgeSubtle}>复杂表格/公式/分栏识别</span>
-                  <span className={styles.badgeSubtle}>高保真 Markdown 排版还原</span>
-                </div>
+                <Settings size={13} />
+                <span>检查引擎与 API Key</span>
+              </button>
+            </div>
+          </div>
+        ) : viewMode === 'ocr_source' && ocrText ? (
+          <article className={articleClasses} style={{ fontSize: `${fontSize}px` }}>
+            <div className={styles.ocrBannerBar}>
+              <div className={styles.ocrBannerTitle}>
+                <ScanText size={15} />
+                <span>PaddleOCR 结构化原文 · 第 {pageNumber} 页</span>
               </div>
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{ocrText}</ReactMarkdown>
+              <button
+                type="button"
+                className={styles.btn}
+                onClick={() => onExecuteTranslateText(ocrText, pageNumber)}
+              >
+                <Sparkles size={13} />
+                <span>将此 OCR 原文翻译为中文</span>
+              </button>
             </div>
-          ) : (
-            <div
-              style={{
-                maxWidth: isImmersive ? (fullWidthReading ? '100%' : '900px') : 'none',
-                margin: isImmersive ? '0 auto' : '0',
-                fontSize: `${fontSize}px`,
-                lineHeight: isImmersive ? '2.0' : '1.85',
-                transition: 'font-size 0.2s ease, max-width 0.25s ease',
-              }}
+            <ReactMarkdown remarkPlugins={REMARK_PLUGINS}>{ocrText}</ReactMarkdown>
+          </article>
+        ) : isNoTextPage && !displayedText ? (
+          /* 扫描页 / 图片页内联操作卡 */
+          <div className={styles.stateCard}>
+            <div className={styles.stateCardIcon}>
+              <ScanText size={20} />
+            </div>
+            <h3 className={styles.stateCardTitle}>第 {pageNumber} 页未检测到内嵌文字层</h3>
+            <p className={styles.stateCardDesc}>
+              此页可能为扫描书页、插图或纯排版扉页。您可使用多模态 OCR 提取结构化版面并直接翻译为中文。
+            </p>
+            <div className={styles.stateCardActions}>
+              <button type="button" className={styles.btn} onClick={onRunOcrAndTranslate}>
+                <ScanText size={14} />
+                <span>OCR 识别并翻译为中文</span>
+              </button>
+              <button type="button" className={styles.btnSecondary} onClick={onRunOcrOnly}>
+                <span>仅提取原文 Markdown</span>
+              </button>
+            </div>
+            <button
+              type="button"
+              className={styles.stateCardSubtleLink}
+              onClick={() => onOpenSettings('ocr')}
             >
-              <BlockContentRenderer
-                text={displayedText ? displayedText : '待翻译或翻页中...'}
-                currentPageClips={currentPageClips}
-                onClippedSpanClick={onClippedSpanClick}
-              />
-              {isTranslating && <span className={styles.cursorPulse}> ▍</span>}
+              配置百度飞桨 OCR Token →
+            </button>
+          </div>
+        ) : !displayedText ? (
+          /* 手动模式或尚未翻译页内联操作卡 */
+          <div className={styles.stateCard}>
+            <div className={styles.stateCardIcon}>
+              <Sparkles size={20} />
             </div>
-          )}
-        </div>
-
-        <ClipsDrawer
-          clips={clips}
-          isOpen={isOpen}
-          toggleBtnRef={toggleBtnRef}
-          onToggle={onToggle}
-          onClose={onClose}
-          onCopyAll={onCopyAll}
-          onExportMarkdown={onExportMarkdown}
-          onJumpToPage={onJumpToPage}
-          onCopyClip={onCopyClip}
-          onDeleteClip={onDeleteClip}
-        />
+            <h3 className={styles.stateCardTitle}>第 {pageNumber} 页尚未生成译文</h3>
+            <p className={styles.stateCardDesc}>
+              {autoTranslate
+                ? '点击下方按钮立即请求本页精译。'
+                : '当前处于手动翻译模式，您可按需翻译本页，或开启翻页自动连译。'}
+            </p>
+            <div className={styles.stateCardActions}>
+              <button type="button" className={styles.btn} onClick={onTranslateCurrentPage}>
+                <Sparkles size={14} />
+                <span>立即翻译本页</span>
+              </button>
+              {!autoTranslate && (
+                <button
+                  type="button"
+                  className={styles.btnSecondary}
+                  onClick={onEnableAutoTranslateAndRun}
+                >
+                  <span>开启翻页自动连译</span>
+                </button>
+              )}
+            </div>
+            <button
+              type="button"
+              className={styles.stateCardSubtleLink}
+              onClick={onRunOcrAndTranslate}
+            >
+              若原文乱码或为扫描版，改用 OCR 识别并翻译 →
+            </button>
+          </div>
+        ) : (
+          <article className={articleClasses} style={{ fontSize: `${fontSize}px` }}>
+            <BlockContentRenderer
+              text={displayedText}
+              currentPageClips={currentPageClips}
+              onClippedSpanClick={onClippedSpanClick}
+            />
+            {isTranslating && <span className={styles.cursorPulse}> ▍</span>}
+          </article>
+        )}
       </div>
     </div>
   );

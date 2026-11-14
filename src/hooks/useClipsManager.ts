@@ -94,21 +94,19 @@ export function useClipsManager(options: UseClipsManagerOptions) {
     const startX = startRect.left + (startRect.width || 120) / 2;
     const startY = startRect.top + (startRect.height || 32) / 2;
 
-    // 抽屉打开时飞向抽屉顶部列表，收起时飞向折叠把手
+    // 侧栏打开时飞向右侧栏顶部标签区，收起时精准飞向顶栏最右侧 ◫ 图标按钮
     let targetX: number;
     let targetY: number;
+    const btnRect = toggleBtnRef.current?.getBoundingClientRect();
     if (isClipsDrawerOpen) {
-      targetX = window.innerWidth - 160;
-      targetY = 90;
+      targetX = window.innerWidth - 168;
+      targetY = 86;
+    } else if (btnRect) {
+      targetX = btnRect.left + btnRect.width / 2;
+      targetY = btnRect.top + btnRect.height / 2;
     } else {
-      const btnRect = toggleBtnRef.current?.getBoundingClientRect();
-      if (btnRect) {
-        targetX = btnRect.left + btnRect.width / 2;
-        targetY = btnRect.top + btnRect.height / 2;
-      } else {
-        targetX = window.innerWidth - 15;
-        targetY = window.innerHeight / 2;
-      }
+      targetX = window.innerWidth - 24;
+      targetY = 24;
     }
 
     setFlightPayload({ startX, startY, targetX, targetY, text: textToClip });

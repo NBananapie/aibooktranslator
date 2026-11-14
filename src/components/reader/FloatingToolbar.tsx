@@ -57,8 +57,9 @@ export function FloatingToolbar({
         }}
       >
         {toolbar.isClipped ? <Check size={13} /> : <BookmarkPlus size={13} />}
-        <span>{toolbar.isClipped ? '已剪藏' : '剪藏'}</span>
+        <span>{toolbar.isClipped ? '已存书摘' : '书摘'}</span>
       </button>
+      <span className={styles.capsuleDivider} />
       <button
         type="button"
         className={styles.capsuleBtn}
@@ -71,6 +72,7 @@ export function FloatingToolbar({
         <Sparkles size={13} />
         <span>解释</span>
       </button>
+      <span className={styles.capsuleDivider} />
       <button
         type="button"
         className={styles.capsuleBtn}

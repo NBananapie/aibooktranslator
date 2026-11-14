@@ -99,16 +99,16 @@ function createCardOffscreenCanvas(
   }
 
   const bgGrad = ctx.createLinearGradient(0, 0, cardW, cardH);
-  bgGrad.addColorStop(0, '#f59e0b');
-  bgGrad.addColorStop(0.5, '#ea580c');
-  bgGrad.addColorStop(1, '#d97706');
+  bgGrad.addColorStop(0, '#D97757');
+  bgGrad.addColorStop(0.55, '#C96442');
+  bgGrad.addColorStop(1, '#B35334');
   ctx.fillStyle = bgGrad;
   ctx.fill();
 
-  // 2. 顶部高光镜面反射（macOS Aqua 质感）
+  // 2. 顶部温润纸感高光
   const glossGrad = ctx.createLinearGradient(0, 0, 0, cardH * 0.55);
-  glossGrad.addColorStop(0, 'rgba(255, 255, 255, 0.45)');
-  glossGrad.addColorStop(1, 'rgba(255, 255, 255, 0.05)');
+  glossGrad.addColorStop(0, 'rgba(250, 249, 245, 0.28)');
+  glossGrad.addColorStop(1, 'rgba(250, 249, 245, 0.02)');
   ctx.fillStyle = glossGrad;
   ctx.beginPath();
   if (ctx.roundRect) {
@@ -118,28 +118,28 @@ function createCardOffscreenCanvas(
   }
   ctx.fill();
 
-  // 3. 晶透金边
+  // 3. 暖白细边
   ctx.beginPath();
   if (ctx.roundRect) {
     ctx.roundRect(1, 1, cardW - 2, cardH - 2, r);
   } else {
     ctx.rect(1, 1, cardW - 2, cardH - 2);
   }
-  ctx.strokeStyle = 'rgba(254, 243, 199, 0.95)';
-  ctx.lineWidth = 1.2;
+  ctx.strokeStyle = 'rgba(250, 249, 245, 0.85)';
+  ctx.lineWidth = 1;
   ctx.stroke();
   ctx.restore();
 
-  // 4. 书摘图标与字样
+  // 4. 书摘字样
   ctx.save();
-  ctx.fillStyle = '#ffffff';
-  ctx.font = '600 12px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+  ctx.fillStyle = '#FAF9F5';
+  ctx.font = '500 12px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif';
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
-  ctx.shadowColor = 'rgba(0, 0, 0, 0.35)';
-  ctx.shadowBlur = 3;
+  ctx.shadowColor = 'rgba(20, 20, 19, 0.22)';
+  ctx.shadowBlur = 2;
   ctx.shadowOffsetY = 1;
-  ctx.fillText('📌 ' + previewText, 12, cardH / 2);
+  ctx.fillText('书摘 · ' + previewText, 12, cardH / 2);
   ctx.restore();
 
   return canvas;
@@ -327,39 +327,39 @@ export function ClipFlightCanvas({
         }
         ctx.closePath();
 
-        // 描金流光边框
-        ctx.strokeStyle = 'rgba(254, 243, 199, 0.95)';
-        ctx.lineWidth = 1.2;
-        ctx.shadowColor = '#f59e0b';
-        ctx.shadowBlur = 8;
+        // 陶土纸感流光边框
+        ctx.strokeStyle = 'rgba(250, 249, 245, 0.9)';
+        ctx.lineWidth = 1.1;
+        ctx.shadowColor = '#C96442';
+        ctx.shadowBlur = 6;
         ctx.stroke();
 
-        // 漏斗内部晶透金光覆层
+        // 漏斗内部温润覆层
         const sheen = ctx.createLinearGradient(activeSlices[0].xCenter, startY, targetX, targetY);
-        sheen.addColorStop(0, 'rgba(251, 191, 36, 0.08)');
-        sheen.addColorStop(0.7, 'rgba(245, 158, 11, 0.22)');
-        sheen.addColorStop(1, 'rgba(254, 243, 199, 0.4)');
+        sheen.addColorStop(0, 'rgba(217, 119, 87, 0.06)');
+        sheen.addColorStop(0.7, 'rgba(201, 100, 66, 0.18)');
+        sheen.addColorStop(1, 'rgba(250, 249, 245, 0.32)');
         ctx.fillStyle = sheen;
         ctx.globalCompositeOperation = 'lighter';
         ctx.fill();
         ctx.restore();
       }
 
-      // 4. 漏斗通道星尘粒子流（Magic Lamp Stardust）
+      // 4. 漏斗通道微粒流
       if (t > 0.12 && t < 0.95) {
         if (Math.random() < 0.8) {
           stardust.push({
             tau: 0.15 + Math.random() * 0.45,
             dtau: 0.02 + Math.random() * 0.025,
             offsetY: (Math.random() - 0.5) * 14,
-            size: 1.5 + Math.random() * 2,
-            color: Math.random() > 0.35 ? '#fbbf24' : '#ffffff',
-            alpha: 0.9,
+            size: 1.4 + Math.random() * 1.8,
+            color: Math.random() > 0.35 ? '#D97757' : '#FAF9F5',
+            alpha: 0.85,
           });
         }
       }
 
-      // 更新并渲染漏斗星尘
+      // 更新并渲染漏斗微粒
       for (let s = stardust.length - 1; s >= 0; s--) {
         const star = stardust[s];
         star.tau += star.dtau;
@@ -384,15 +384,15 @@ export function ClipFlightCanvas({
         ctx.save();
         ctx.globalAlpha = star.alpha;
         ctx.fillStyle = star.color;
-        ctx.shadowColor = '#f59e0b';
-        ctx.shadowBlur = 6;
+        ctx.shadowColor = '#C96442';
+        ctx.shadowBlur = 4;
         ctx.beginPath();
         ctx.arc(starPt.x, finalStarY, star.size, 0, Math.PI * 2);
         ctx.fill();
         ctx.restore();
       }
 
-      // 5. 吸收奇点瞬间：在 t >= 1 时触发把手共振冲击波与内聚光芒
+      // 5. 吸收奇点瞬间：在 t >= 1 时触发把手共振涟漪与内聚微光
       if (t >= 1 && !hasTriggeredAbsorb) {
         hasTriggeredAbsorb = true;
         onAbsorb?.();
@@ -401,37 +401,37 @@ export function ClipFlightCanvas({
           x: targetX,
           y: targetY,
           radius: 3,
-          maxRadius: 36,
-          alpha: 0.95,
+          maxRadius: 32,
+          alpha: 0.9,
         };
 
-        for (let m = 0; m < 12; m++) {
-          const rayAngle = (Math.PI * 2 * m) / 12 + Math.random() * 0.2;
-          const rayDist = 22 + Math.random() * 14;
+        for (let m = 0; m < 10; m++) {
+          const rayAngle = (Math.PI * 2 * m) / 10 + Math.random() * 0.2;
+          const rayDist = 18 + Math.random() * 12;
           inwardRays.push({
             x: targetX + Math.cos(rayAngle) * rayDist,
             y: targetY + Math.sin(rayAngle) * rayDist,
             targetX,
             targetY,
             progress: 0,
-            size: 1.8 + Math.random() * 1.4,
-            color: Math.random() > 0.4 ? '#f59e0b' : '#ffffff',
+            size: 1.5 + Math.random() * 1.2,
+            color: Math.random() > 0.4 ? '#C96442' : '#FAF9F5',
           });
         }
       }
 
-      // 渲染金色共振冲击波
+      // 渲染陶土色共振涟漪
       if (shockwave) {
-        shockwave.radius += 2.2;
-        shockwave.alpha -= 0.055;
+        shockwave.radius += 2.0;
+        shockwave.alpha -= 0.06;
         if (shockwave.alpha > 0) {
           ctx.save();
           ctx.beginPath();
           ctx.arc(shockwave.x, shockwave.y, shockwave.radius, 0, Math.PI * 2);
-          ctx.strokeStyle = `rgba(245, 158, 11, ${shockwave.alpha})`;
-          ctx.lineWidth = 2.2;
-          ctx.shadowColor = '#f59e0b';
-          ctx.shadowBlur = 10;
+          ctx.strokeStyle = `rgba(201, 100, 66, ${shockwave.alpha})`;
+          ctx.lineWidth = 1.8;
+          ctx.shadowColor = '#C96442';
+          ctx.shadowBlur = 6;
           ctx.stroke();
           ctx.restore();
         } else {
@@ -439,7 +439,7 @@ export function ClipFlightCanvas({
         }
       }
 
-      // 渲染向内坍缩的内聚星芒
+      // 渲染向内坍缩的内聚微光
       for (let rIdx = inwardRays.length - 1; rIdx >= 0; rIdx--) {
         const ray = inwardRays[rIdx];
         ray.progress += 0.09;
@@ -454,8 +454,8 @@ export function ClipFlightCanvas({
         ctx.save();
         ctx.globalAlpha = rayAlpha;
         ctx.fillStyle = ray.color;
-        ctx.shadowColor = '#fbbf24';
-        ctx.shadowBlur = 8;
+        ctx.shadowColor = '#D97757';
+        ctx.shadowBlur = 5;
         ctx.beginPath();
         ctx.arc(curRx, curRy, ray.size, 0, Math.PI * 2);
         ctx.fill();

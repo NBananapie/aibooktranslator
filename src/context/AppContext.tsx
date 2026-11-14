@@ -23,6 +23,9 @@ export interface AppSettings {
   autoCloudSync?: boolean;
 }
 
+export type ReaderFontFamily = 'serif' | 'sans';
+export type PreloadCountOption = 0 | 1 | 2 | 4;
+
 export const SETTINGS_VERSION = 'v6.0-no-builtin-key';
 
 /** 已吊销的旧内置 Key 前缀，加载本地设置时清除，避免继续使用 */
@@ -103,14 +106,26 @@ interface AppContextType {
   toggleTheme: () => void;
   fontSize: number;
   setFontSize: (size: number | ((prev: number) => number)) => void;
+  readerFont: ReaderFontFamily;
+  setReaderFont: (font: ReaderFontFamily) => void;
+  preloadCount: PreloadCountOption;
+  setPreloadCount: (count: PreloadCountOption) => void;
+  dimPdfInDark: boolean;
+  setDimPdfInDark: (dim: boolean) => void;
+  autoAppendCompanionPage: boolean;
+  setAutoAppendCompanionPage: (auto: boolean) => void;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [settings, setSettingsState] = useState<AppSettings>(DEFAULT_SETTINGS);
-  const [theme, setThemeState] = useState<'dark' | 'light'>('dark');
+  const [theme, setThemeState] = useState<'dark' | 'light'>('light');
   const [fontSize, setFontSizeState] = useState<number>(DEFAULT_FONT_SIZE);
+  const [readerFont, setReaderFontState] = useState<ReaderFontFamily>('serif');
+  const [preloadCount, setPreloadCountState] = useState<PreloadCountOption>(2);
+  const [dimPdfInDark, setDimPdfInDarkState] = useState<boolean>(true);
+  const [autoAppendCompanionPage, setAutoAppendCompanionPageState] = useState<boolean>(true);
   const [isLoaded, setIsLoaded] = useState(false);
 
   useEffect(() => {
@@ -126,19 +141,38 @@ export function AppProvider({ children }: { children: ReactNode }) {
     localStorage.setItem('pdf_translator_settings', JSON.stringify(loaded));
     localStorage.setItem('pdf_translator_version', SETTINGS_VERSION);
 
+    // 默认采用暖白纸感浅色主题；若用户曾显式切换过主题则尊重其偏好
     const savedTheme = localStorage.getItem('app_theme');
-    const initialTheme = savedTheme === 'light' || savedTheme === 'dark' ? savedTheme : 'dark';
+    const initialTheme: 'light' | 'dark' =
+      savedTheme === 'light' || savedTheme === 'dark' ? savedTheme : 'light';
     document.documentElement.setAttribute('data-theme', initialTheme);
 
     const savedFontSize = parseFloat(localStorage.getItem('reader_font_size') || '');
     const initialFontSize =
       !isNaN(savedFontSize) && savedFontSize >= 12 && savedFontSize <= 32 ? savedFontSize : DEFAULT_FONT_SIZE;
 
+    const savedFont = localStorage.getItem('reader_font_family');
+    const initialFont: ReaderFontFamily = savedFont === 'sans' || savedFont === 'serif' ? savedFont : 'serif';
+
+    const savedPreload = Number(localStorage.getItem('reader_preload_count'));
+    const initialPreload: PreloadCountOption =
+      savedPreload === 0 || savedPreload === 1 || savedPreload === 2 || savedPreload === 4 ? savedPreload : 2;
+
+    const savedDim = localStorage.getItem('reader_dim_pdf_dark');
+    const initialDim = savedDim === null ? true : savedDim === 'true';
+
+    const savedAutoAppend = localStorage.getItem('reader_auto_append_companion');
+    const initialAutoAppend = savedAutoAppend === null ? true : savedAutoAppend === 'true';
+
     // 从 localStorage 读取客户端持久化状态只能在挂载后进行，以避免水合不一致
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setSettingsState(loaded);
     setThemeState(initialTheme);
     setFontSizeState(initialFontSize);
+    setReaderFontState(initialFont);
+    setPreloadCountState(initialPreload);
+    setDimPdfInDarkState(initialDim);
+    setAutoAppendCompanionPageState(initialAutoAppend);
     setIsLoaded(true);
   }, []);
 
@@ -166,18 +200,48 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
   };
 
+  const setReaderFont = (font: ReaderFontFamily) => {
+    setReaderFontState(font);
+    localStorage.setItem('reader_font_family', font);
+  };
+
+  const setPreloadCount = (count: PreloadCountOption) => {
+    setPreloadCountState(count);
+    localStorage.setItem('reader_preload_count', String(count));
+  };
+
+  const setDimPdfInDark = (dim: boolean) => {
+    setDimPdfInDarkState(dim);
+    localStorage.setItem('reader_dim_pdf_dark', String(dim));
+  };
+
+  const setAutoAppendCompanionPage = (auto: boolean) => {
+    setAutoAppendCompanionPageState(auto);
+    localStorage.setItem('reader_auto_append_companion', String(auto));
+  };
+
   if (!isLoaded) return null; // Prevent hydration mismatch
 
   return (
-    <AppContext.Provider value={{
-      settings,
-      setSettings,
-      theme,
-      setTheme,
-      toggleTheme,
-      fontSize,
-      setFontSize
-    }}>
+    <AppContext.Provider
+      value={{
+        settings,
+        setSettings,
+        theme,
+        setTheme,
+        toggleTheme,
+        fontSize,
+        setFontSize,
+        readerFont,
+        setReaderFont,
+        preloadCount,
+        setPreloadCount,
+        dimPdfInDark,
+        setDimPdfInDark,
+        autoAppendCompanionPage,
+        setAutoAppendCompanionPage,
+      }}
+    >
       {children}
     </AppContext.Provider>
   );

@@ -18,6 +18,7 @@ export interface UseTranslatorOptions {
   pageNumber: number;
   numPages: number;
   settings: AppSettings;
+  preloadCount?: number;
   dbRecord: HistoryRecord | null;
   setDbRecord: React.Dispatch<React.SetStateAction<HistoryRecord | null>>;
 }
@@ -35,8 +36,6 @@ interface PageMessage {
 
 /** 上一页结尾作为跨页上下文的最大字符数 */
 const PREVIOUS_TAIL_CHARS = 400;
-const NO_TEXT_NOTICE =
-  '*(当前页面未检测到原生文本内容。若本页为扫描件或图表，可点击上方顶栏中的「百度飞桨 OCR」按钮进行高精度结构化识别)*';
 
 function isAbortError(err: unknown): boolean {
   return typeof err === 'object' && err !== null && (err as { name?: unknown }).name === 'AbortError';
@@ -47,7 +46,7 @@ function isTextItem(item: unknown): item is TextItem {
 }
 
 /** 提取单页原文：优先使用版面分析得到的段落块，失败时退回按字号分级的纯文本 */
-async function extractPageText(doc: PDFDocumentProxy, page: number): Promise<string> {
+export async function extractPageText(doc: PDFDocumentProxy, page: number): Promise<string> {
   const pdfPage = await doc.getPage(page);
   const textContent = await pdfPage.getTextContent();
   const items = textContent.items.filter(isTextItem);
@@ -66,11 +65,11 @@ async function getPreviousPageTail(doc: PDFDocumentProxy, page: number): Promise
 }
 
 export function useTranslator(options: UseTranslatorOptions) {
-  const { file, pdfDocument, pageNumber, numPages, settings, dbRecord, setDbRecord } = options;
+  const { file, pdfDocument, pageNumber, numPages, settings, preloadCount = 2, dbRecord, setDbRecord } = options;
 
   const [stream, setStream] = useState<StreamState | null>(null);
   const [translatingPage, setTranslatingPage] = useState<number | null>(null);
-  const [notice, setNotice] = useState<PageMessage | null>(null);
+  const [noTextPage, setNoTextPage] = useState<number | null>(null);
   const [pageError, setPageError] = useState<PageMessage | null>(null);
   const [autoTranslate, setAutoTranslate] = useState<boolean>(false);
   const [isPreTranslating, setIsPreTranslating] = useState<boolean>(false);
@@ -87,12 +86,27 @@ export function useTranslator(options: UseTranslatorOptions) {
     translationCacheRef.current = translationCache;
   }, [translationCache]);
 
-  // 翻页时取消进行中的当前页翻译
+  // 翻页时取消进行中的当前页翻译，并检测本页是否有内嵌文本层
   useEffect(() => {
     currentPageRef.current = pageNumber;
     abortControllerRef.current?.abort();
     abortControllerRef.current = null;
-  }, [pageNumber]);
+
+    if (!pdfDocument || pageNumber < 1) return;
+    let cancelled = false;
+    extractPageText(pdfDocument, pageNumber)
+      .then(txt => {
+        if (!cancelled) {
+          setNoTextPage(txt.trim() ? null : pageNumber);
+        }
+      })
+      .catch(() => {
+        // 忽略翻页读取异常
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [pageNumber, pdfDocument]);
 
   // 切换文档或卸载时取消所有请求
   useEffect(() => {
@@ -107,6 +121,19 @@ export function useTranslator(options: UseTranslatorOptions) {
     if (!file) return null;
     return pdfjs.getDocument({ data: await file.arrayBuffer() }).promise;
   }, [pdfDocument, file]);
+
+  const extractPagePlainText = useCallback(
+    async (targetPage: number): Promise<string> => {
+      try {
+        const doc = await getPdfDoc();
+        if (!doc || targetPage < 1 || (doc.numPages && targetPage > doc.numPages)) return '';
+        return await extractPageText(doc, targetPage);
+      } catch {
+        return '';
+      }
+    },
+    [getPdfDoc]
+  );
 
   /** 写入本地数据库、更新内存状态，并安排云端增量同步 */
   const persistTranslation = useCallback(
@@ -202,11 +229,11 @@ export function useTranslator(options: UseTranslatorOptions) {
         const doc = await getPdfDoc();
         if (!doc) return;
         const text = await extractPageText(doc, targetPage);
-        // 无原生文本（封面、插图、扫描页）：提示使用 OCR，不在后台自动调用
         if (!text.trim()) {
-          setNotice({ page: targetPage, text: NO_TEXT_NOTICE });
+          setNoTextPage(targetPage);
           return;
         }
+        setNoTextPage(prev => (prev === targetPage ? null : prev));
         const previousTail = await getPreviousPageTail(doc, targetPage);
         await executeTranslateText(text, targetPage, previousTail);
       } catch (err) {
@@ -222,8 +249,8 @@ export function useTranslator(options: UseTranslatorOptions) {
 
   /** 后台预翻译后续页面（跳过已有译文与无文本页面），可被取消 */
   const preTranslatePipeline = useCallback(
-    async (startPage: number, maxCount = 2) => {
-      if ((!file && !pdfDocument) || preloadAbortRef.current) return;
+    async (startPage: number, maxCount = preloadCount) => {
+      if (maxCount <= 0 || (!file && !pdfDocument) || preloadAbortRef.current) return;
 
       const pagesToPreload: number[] = [];
       for (let p = startPage + 1; p <= numPages && pagesToPreload.length < maxCount; p++) {
@@ -265,34 +292,40 @@ export function useTranslator(options: UseTranslatorOptions) {
         setIsPreTranslating(false);
       }
     },
-    [file, pdfDocument, numPages, getPdfDoc, requestTranslation, persistTranslation]
+    [preloadCount, file, pdfDocument, numPages, getPdfDoc, requestTranslation, persistTranslation]
   );
 
-  // 自动翻译：当前页无缓存时延迟翻译，并预翻译后续页面
-  const onAutoTranslatePage = useEffectEvent((page: number) => {
-    if (translationCacheRef.current[page]) {
-      preTranslatePipeline(page);
+  // 自动翻译：当前页无缓存时延迟翻译，并根据用户设定的 preloadCount 预翻译后续页面
+  const onAutoTranslatePage = useEffectEvent((page: number, count: number) => {
+    const isCurrentCached = Boolean(translationCacheRef.current[page]);
+    if (isCurrentCached && count <= 0) {
       return undefined;
     }
+    const delayMs = isCurrentCached ? 120 : 320;
     const timer = setTimeout(() => {
-      translateCurrentPage();
-      preTranslatePipeline(page);
-    }, 350);
+      if (!isCurrentCached) {
+        translateCurrentPage();
+      }
+      if (count > 0) {
+        preTranslatePipeline(page, count);
+      }
+    }, delayMs);
     return () => clearTimeout(timer);
   });
 
   useEffect(() => {
     if (!file || !autoTranslate) return;
-    return onAutoTranslatePage(pageNumber);
-  }, [file, pageNumber, autoTranslate]);
+    return onAutoTranslatePage(pageNumber, preloadCount);
+  }, [file, pageNumber, autoTranslate, preloadCount]);
 
   const cachedText = translationCache[pageNumber];
   const displayedText = useMemo(() => {
     if (stream?.page === pageNumber) return stream.text;
     if (cachedText) return parseTranslationOutput(cachedText).cleanMarkdown;
-    if (notice?.page === pageNumber) return notice.text;
     return '';
-  }, [stream, cachedText, notice, pageNumber]);
+  }, [stream, cachedText, pageNumber]);
+
+  const isNoTextPage = noTextPage === pageNumber && !cachedText && !(stream?.page === pageNumber);
 
   const setError = useCallback(
     (message: string) => setPageError(message ? { page: currentPageRef.current, text: message } : null),
@@ -301,6 +334,7 @@ export function useTranslator(options: UseTranslatorOptions) {
 
   return {
     displayedText,
+    isNoTextPage,
     isTranslating: translatingPage === pageNumber,
     isThinking: stream?.page === pageNumber && stream.thinking,
     error: pageError?.page === pageNumber ? pageError.text : '',
@@ -310,6 +344,7 @@ export function useTranslator(options: UseTranslatorOptions) {
     isPreTranslating,
     preloadProgress,
     translationCache,
+    extractPagePlainText,
     executeTranslateText,
     translateCurrentPage,
     preTranslatePipeline,

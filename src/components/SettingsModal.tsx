@@ -3,10 +3,10 @@
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAppContext, AppSettings, DEFAULT_OCR_SETTINGS } from '@/context/AppContext';
+import { useToast } from '@/components/Toast';
 import { buildDefaultTranslatePrompt } from '@/lib/llm/prompts';
 import styles from '@/app/page.module.css';
 import {
-  Settings as SettingsIcon,
   RotateCcw,
   Globe,
   Sparkles,
@@ -16,14 +16,16 @@ import {
   Key,
   RefreshCw,
   Check,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 import { testCloudSyncConnection } from '@/services/cloudSyncService';
 import { isStrongSyncKey, generateStrongSyncKey } from '@/lib/crypto';
 
 const PROVIDER_PRESETS: { label: string; baseUrl: string; model: string; provider: 'openai' | 'gemini' | 'custom' }[] = [
-  { label: 'Agnes (3.0 Flash 默认)', baseUrl: 'https://apihub.agnes-ai.com/v1', model: 'agnes-3.0-flash', provider: 'openai' },
-  { label: 'MiniMax', baseUrl: 'https://api.minimax.chat/v1', model: 'MiniMax-M2.7-highspeed', provider: 'openai' },
+  { label: 'Agnes 3.0 Flash', baseUrl: 'https://apihub.agnes-ai.com/v1', model: 'agnes-3.0-flash', provider: 'openai' },
   { label: 'Google Gemini', baseUrl: 'https://generativelanguage.googleapis.com', model: 'gemini-3.5-flash-lite', provider: 'gemini' },
+  { label: 'MiniMax', baseUrl: 'https://api.minimax.chat/v1', model: 'MiniMax-M2.7-highspeed', provider: 'openai' },
   { label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', provider: 'openai' },
 ];
 
@@ -32,31 +34,44 @@ const OCR_MODEL_PRESETS = [
   { label: 'PP-OCRv6 (高精度通用文本识别)', model: 'PP-OCRv6' },
 ];
 
-const hintStyle: React.CSSProperties = { fontSize: '12px', color: '#6b6b70', marginTop: '4px', lineHeight: 1.5 };
+export type SettingsTabId = 'llm' | 'ocr' | 'sync';
 
 export interface SettingsModalProps {
   isOpen: boolean;
+  initialTab?: SettingsTabId;
   onClose: () => void;
 }
 
-export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
+export function SettingsModal({ isOpen, initialTab = 'llm', onClose }: SettingsModalProps) {
   const router = useRouter();
   const { settings, setSettings } = useAppContext();
+  const { showToast } = useToast();
+
+  const [activeTab, setActiveTab] = useState<SettingsTabId>(initialTab);
+  const [showAdvancedLlm, setShowAdvancedLlm] = useState<boolean>(false);
   const [formSettings, setFormSettings] = useState<AppSettings>(settings);
-  const [syncTestStatus, setSyncTestStatus] = useState<{ testing: boolean; message?: string; success?: boolean }>({
-    testing: false,
-  });
+  const [syncTestStatus, setSyncTestStatus] = useState<{
+    testing: boolean;
+    message?: string;
+    success?: boolean;
+  }>({ testing: false });
   const isBackdropMouseDownRef = React.useRef(false);
 
-  // 每次打开时用当前设置重置表单（在渲染期间比较打开状态，避免 effect 中同步 setState）
+  // 每次打开时同步当前设置与指定初始分栏（渲染期间对比，零额外 effect）
   const [wasOpen, setWasOpen] = useState(isOpen);
-  if (isOpen !== wasOpen) {
+  const [prevInitialTab, setPrevInitialTab] = useState(initialTab);
+  if (isOpen !== wasOpen || initialTab !== prevInitialTab) {
     setWasOpen(isOpen);
+    setPrevInitialTab(initialTab);
     if (isOpen) {
       setFormSettings(settings);
+      setActiveTab(initialTab);
       setSyncTestStatus({ testing: false });
+      setShowAdvancedLlm(Boolean(settings.customPrompt?.trim()));
     }
   }
+
+  if (!isOpen) return null;
 
   const generateRandomSyncKey = () => {
     const key = generateStrongSyncKey();
@@ -73,17 +88,17 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
       setSyncTestStatus({
         testing: false,
         success: false,
-        message: '口令长度不足：需至少 16 位高熵字符以保证端到端加密安全与防爆破',
+        message: '口令长度不足：需至少 16 位高熵字符以保证端到端加密安全',
       });
       return;
     }
-    setSyncTestStatus({ testing: true, message: '正在测试与 Cloudflare D1 的安全连接...' });
+    setSyncTestStatus({ testing: true, message: '正在验证 Cloudflare D1 安全连接...' });
     const result = await testCloudSyncConnection(formSettings.syncKey);
     if (result.success) {
       setSyncTestStatus({
         testing: false,
         success: true,
-        message: `连接成功！云端已有此口令下的 ${result.count} 本书籍同步记录（已启用 AES-GCM 端到端加密）。`,
+        message: `连接成功，云端已有 ${result.count} 本书籍同步记录（AES-GCM 端到端加密已启用）。`,
       });
     } else {
       setSyncTestStatus({
@@ -93,8 +108,6 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
       });
     }
   };
-
-  if (!isOpen) return null;
 
   const getPresetKey = (cfg: { baseUrl: string; provider?: string }): string => {
     if (cfg.baseUrl.includes('agnes-ai.com')) return 'agnes';
@@ -115,7 +128,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     }));
   };
 
-  const handleSwitchPreset = (preset: typeof PROVIDER_PRESETS[0]) => {
+  const handleSwitchPreset = (preset: (typeof PROVIDER_PRESETS)[0]) => {
     const currentPKey = getPresetKey(formSettings);
     const targetPKey = getPresetKey(preset);
 
@@ -139,10 +152,11 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   const saveSettings = () => {
     if (formSettings.syncKey && formSettings.syncKey.trim()) {
       if (!isStrongSyncKey(formSettings.syncKey)) {
+        setActiveTab('sync');
         setSyncTestStatus({
           testing: false,
           success: false,
-          message: '保存失败：口令长度不足 16 位，请使用更长的高熵口令或点击“随机生成新口令”',
+          message: '保存未通过：同步口令需至少 16 位字符，建议点击「随机生成口令」',
         });
         return;
       }
@@ -156,10 +170,11 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
       },
     };
     setSettings(finalSettings);
+    showToast('偏好与引擎配置已保存', 'success');
     onClose();
   };
 
-  const isPresetActive = (preset: typeof PROVIDER_PRESETS[0]) => {
+  const isPresetActive = (preset: (typeof PROVIDER_PRESETS)[0]) => {
     if (preset.provider === 'gemini') {
       return formSettings.provider === 'gemini' || formSettings.baseUrl.includes('googleapis.com');
     }
@@ -181,348 +196,416 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
       }}
     >
       <div className={styles.modalContent} onClick={e => e.stopPropagation()}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-          <h2 style={{ fontSize: '16px', display: 'flex', alignItems: 'center', gap: '8px', margin: 0 }}>
-            <SettingsIcon size={18} style={{ color: 'var(--primary)' }} /> 引擎与服务商配置
-          </h2>
-          <button className={styles.iconBtn} onClick={onClose} data-tooltip="关闭">
+        <div className={styles.modalHeader}>
+          <div>
+            <h2 className={styles.modalTitle}>引擎与阅读偏好</h2>
+            <p className={styles.modalSubtitle}>密钥仅加密保存在当前浏览器本地，支持直连主流大模型</p>
+          </div>
+          <button
+            type="button"
+            className={styles.headerIconBtn}
+            onClick={onClose}
+            aria-label="关闭设置"
+          >
             <X size={16} />
           </button>
         </div>
 
-        {/* LLM 翻译配置板块 */}
-        <div className={styles.settingsSectionTitle} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-          <Sparkles size={14} style={{ color: 'var(--primary)' }} /> AI 翻译大模型配置
-        </div>
-        <div className={styles.formGroup}>
-          <label>选择服务商预设</label>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-            {PROVIDER_PRESETS.map(preset => {
-              const active = isPresetActive(preset);
-              return (
-                <button
-                  key={preset.label}
-                  type="button"
-                  className={`${styles.presetBtn} ${active ? styles.presetBtnActive : ''}`}
-                  onClick={() => handleSwitchPreset(preset)}
-                >
-                  {preset.label}
-                </button>
-              );
-            })}
-          </div>
-          <p style={hintStyle}>
-            默认集成 Agnes 3.0 Flash 极速引擎，兼容 MiniMax、OpenAI 接口与 Google Gemini 3.x。
-          </p>
-        </div>
-
-        <div className={styles.formGroup}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <label>LLM API Key</label>
-            <a
-              href="https://apihub.agnes-ai.com"
-              target="_blank"
-              rel="noopener noreferrer"
-              className={styles.btnSecondary}
-              style={{ padding: '2px 8px', fontSize: '11px', display: 'inline-flex', alignItems: 'center', gap: '4px', textDecoration: 'none' }}
-            >
-              免费开通 Agnes API Key →
-            </a>
-          </div>
-          <input 
-            type="password" 
-            value={formSettings.apiKey} 
-            onChange={e => handleApiKeyChange(e.target.value)}
-            placeholder="填入您的 API Key（未开通可点击右上角免费获取）"
-          />
-          <p style={hintStyle}>
-            首次使用请前往{' '}
-            <a href="https://apihub.agnes-ai.com" target="_blank" rel="noopener noreferrer" style={{ fontWeight: 600 }}>
-              Agnes API 开放平台 (apihub.agnes-ai.com)
-            </a>{' '}
-            免费注册并获取 API Key。Key 保存在本浏览器的 localStorage 中，优先由浏览器直连服务商；若服务商不允许浏览器跨域访问，会改由本站服务端转发（不做存储）。
-          </p>
+        {/* 三栏渐进披露导航 */}
+        <div className={styles.modalTabs} role="tablist">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'llm'}
+            className={`${styles.modalTab} ${activeTab === 'llm' ? styles.modalTabActive : ''}`}
+            onClick={() => setActiveTab('llm')}
+          >
+            <Sparkles size={13} />
+            <span>AI 翻译引擎</span>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'ocr'}
+            className={`${styles.modalTab} ${activeTab === 'ocr' ? styles.modalTabActive : ''}`}
+            onClick={() => setActiveTab('ocr')}
+          >
+            <ScanText size={13} />
+            <span>扫描件 OCR</span>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'sync'}
+            className={`${styles.modalTab} ${activeTab === 'sync' ? styles.modalTabActive : ''}`}
+            onClick={() => setActiveTab('sync')}
+          >
+            <Cloud size={13} />
+            <span>多端云同步</span>
+          </button>
         </div>
 
-        <div className={styles.formGroup}>
-          <label>LLM Base URL</label>
-          <input 
-            type="text" 
-            value={formSettings.baseUrl} 
-            onChange={e => setFormSettings({ ...formSettings, baseUrl: e.target.value })}
-          />
-        </div>
-
-        <div className={styles.formGroup}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <label>模型名称 (Model)</label>
-            <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
-              <button
-                type="button"
-                className={styles.btnSecondary}
-                style={{ padding: '2px 6px', fontSize: '10px' }}
-                onClick={() => setFormSettings({ ...formSettings, model: 'agnes-3.0-flash' })}
-              >
-                agnes-3.0-flash
-              </button>
-              {(formSettings.provider === 'gemini' || formSettings.baseUrl.includes('googleapis.com')) ? (
-                <>
-                  <button
-                    type="button"
-                    className={styles.btnSecondary}
-                    style={{ padding: '2px 6px', fontSize: '10px' }}
-                    onClick={() => setFormSettings({ ...formSettings, model: 'gemini-3.5-flash-lite' })}
-                  >
-                    gemini-3.5-flash-lite
-                  </button>
-                  <button
-                    type="button"
-                    className={styles.btnSecondary}
-                    style={{ padding: '2px 6px', fontSize: '10px' }}
-                    onClick={() => setFormSettings({ ...formSettings, model: 'gemini-2.5-flash' })}
-                  >
-                    gemini-2.5-flash
-                  </button>
-                </>
-              ) : formSettings.baseUrl.includes('minimax') ? (
-                <button
-                  type="button"
-                  className={styles.btnSecondary}
-                  style={{ padding: '2px 6px', fontSize: '10px' }}
-                  onClick={() => setFormSettings({ ...formSettings, model: 'MiniMax-M2.7-highspeed' })}
-                >
-                  MiniMax-M2.7-highspeed
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  className={styles.btnSecondary}
-                  style={{ padding: '2px 6px', fontSize: '10px' }}
-                  onClick={() => setFormSettings({ ...formSettings, model: 'gpt-4o-mini' })}
-                >
-                  gpt-4o-mini
-                </button>
-              )}
-            </div>
-          </div>
-          <input 
-            type="text" 
-            value={formSettings.model} 
-            onChange={e => setFormSettings({ ...formSettings, model: e.target.value })}
-            placeholder="例如 agnes-3.0-flash, gemini-3.5-flash-lite 等"
-          />
-        </div>
-
-        {/* 百度飞桨 PaddleOCR 配置专区 */}
-        <div className={styles.settingsDivider} />
-        <div className={styles.settingsSectionTitle} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-          <ScanText size={14} style={{ color: 'var(--primary)' }} /> 百度飞桨 PaddleOCR 识别配置 (AI Studio)
-        </div>
-
-        <div className={styles.formGroup}>
-          <label>OCR 模型选择</label>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-            {OCR_MODEL_PRESETS.map(preset => {
-              const active = (formSettings.ocr?.model || DEFAULT_OCR_SETTINGS.model) === preset.model;
-              return (
-                <button
-                  key={preset.model}
-                  type="button"
-                  className={`${styles.presetBtn} ${active ? styles.presetBtnActive : ''}`}
-                  onClick={() => setFormSettings({
-                    ...formSettings,
-                    ocr: {
-                      ...(formSettings.ocr || DEFAULT_OCR_SETTINGS),
-                      model: preset.model,
-                    }
+        <div className={styles.modalBody}>
+          {activeTab === 'llm' && (
+            <>
+              <div className={styles.formGroup}>
+                <label>服务商预设</label>
+                <div className={styles.presetGrid}>
+                  {PROVIDER_PRESETS.map(preset => {
+                    const active = isPresetActive(preset);
+                    return (
+                      <button
+                        key={preset.label}
+                        type="button"
+                        className={`${styles.presetBtn} ${active ? styles.presetBtnActive : ''}`}
+                        onClick={() => handleSwitchPreset(preset)}
+                      >
+                        {preset.label}
+                      </button>
+                    );
                   })}
-                >
-                  {preset.label}
-                </button>
-              );
-            })}
-          </div>
-          <p style={hintStyle}>
-            用于全自动适配扫描件、带复杂表格/公式的书籍与图片 PDF。获取 Access Token 请访问{' '}
-            <a href="https://aistudio.baidu.com/paddleocr" target="_blank" rel="noopener noreferrer" style={{ fontWeight: 600 }}>
-              百度飞桨 AI Studio
-            </a>。
-          </p>
-        </div>
+                </div>
+              </div>
 
-        <div className={styles.formGroup}>
-          <label>AI Studio Access Token</label>
-          <input 
-            type="password" 
-            value={formSettings.ocr?.apiToken || ''} 
-            onChange={e => setFormSettings({
-              ...formSettings,
-              ocr: {
-                ...(formSettings.ocr || DEFAULT_OCR_SETTINGS),
-                apiToken: e.target.value
-              }
-            })}
-            placeholder="填入百度飞桨 AI Studio Access Token"
-          />
-        </div>
+              <div className={styles.formGroup}>
+                <div className={styles.formLabelRow}>
+                  <label>API Key</label>
+                  <a
+                    href="https://apihub.agnes-ai.com"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className={styles.formExternalLink}
+                  >
+                    获取免费 Agnes API Key →
+                  </a>
+                </div>
+                <input
+                  type="password"
+                  value={formSettings.apiKey}
+                  onChange={e => handleApiKeyChange(e.target.value)}
+                  placeholder="粘贴当前服务商的 API Key"
+                />
+                <p className={styles.settingsHint}>
+                  各服务商的 API Key 独立记忆，切换预设时无需重复粘贴。优先由浏览器直连，跨域受限时自动经无状态代理转发。
+                </p>
+              </div>
 
-        <div className={styles.formGroup}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <label>PaddleOCR API Endpoint (可选自定义)</label>
-            <button 
-              type="button" 
-              className={styles.btnSecondary} 
-              style={{ padding: '2px 6px', fontSize: '11px', display: 'inline-flex', alignItems: 'center', gap: '3px' }}
-              onClick={() => setFormSettings({
-                ...formSettings,
-                ocr: {
-                  ...(formSettings.ocr || DEFAULT_OCR_SETTINGS),
-                  apiUrl: DEFAULT_OCR_SETTINGS.apiUrl
-                }
-              })}
-            >
-              <RotateCcw size={10} /> 恢复默认地址
-            </button>
-          </div>
-          <input 
-            type="text" 
-            value={formSettings.ocr?.apiUrl || ''} 
-            onChange={e => setFormSettings({
-              ...formSettings,
-              ocr: {
-                ...(formSettings.ocr || DEFAULT_OCR_SETTINGS),
-                apiUrl: e.target.value
-              }
-            })}
-            placeholder="https://paddleocr.aistudio-app.com/api/v2/ocr/jobs"
-          />
-        </div>
+              <div className={styles.formGroup}>
+                <div className={styles.formLabelRow}>
+                  <label>模型名称 (Model)</label>
+                  <div className={styles.modelQuickPills}>
+                    <button
+                      type="button"
+                      className={styles.modelQuickPill}
+                      onClick={() => setFormSettings({ ...formSettings, model: 'agnes-3.0-flash' })}
+                    >
+                      agnes-3.0-flash
+                    </button>
+                    {formSettings.provider === 'gemini' ||
+                    formSettings.baseUrl.includes('googleapis.com') ? (
+                      <>
+                        <button
+                          type="button"
+                          className={styles.modelQuickPill}
+                          onClick={() =>
+                            setFormSettings({ ...formSettings, model: 'gemini-3.5-flash-lite' })
+                          }
+                        >
+                          gemini-3.5-flash-lite
+                        </button>
+                        <button
+                          type="button"
+                          className={styles.modelQuickPill}
+                          onClick={() =>
+                            setFormSettings({ ...formSettings, model: 'gemini-2.5-flash' })
+                          }
+                        >
+                          gemini-2.5-flash
+                        </button>
+                      </>
+                    ) : formSettings.baseUrl.includes('minimax') ? (
+                      <button
+                        type="button"
+                        className={styles.modelQuickPill}
+                        onClick={() =>
+                          setFormSettings({ ...formSettings, model: 'MiniMax-M2.7-highspeed' })
+                        }
+                      >
+                        MiniMax-M2.7-highspeed
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className={styles.modelQuickPill}
+                        onClick={() => setFormSettings({ ...formSettings, model: 'gpt-4o-mini' })}
+                      >
+                        gpt-4o-mini
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <input
+                  type="text"
+                  value={formSettings.model}
+                  onChange={e => setFormSettings({ ...formSettings, model: e.target.value })}
+                  placeholder="例如 agnes-3.0-flash"
+                />
+              </div>
 
-        {/* 云端多端数据同步 (Cloudflare D1) */}
-        <div className={styles.settingsDivider} />
-        <div className={styles.formGroup}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <Cloud size={15} style={{ color: 'var(--primary)' }} /> 云端多端同步口令 (Cloudflare D1)
-            </label>
-            <div style={{ display: 'flex', gap: '6px' }}>
+              {/* 渐进披露：自定义 Base URL 与系统提示词 */}
               <button
                 type="button"
-                className={styles.btnSecondary}
-                style={{ padding: '2px 8px', fontSize: '11px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
-                onClick={() => {
-                  onClose();
-                  router.push('/sync');
-                }}
+                className={styles.advancedToggleBtn}
+                onClick={() => setShowAdvancedLlm(prev => !prev)}
               >
-                前往独立管理页 →
+                <span>高级选项（自定义接口地址与翻译提示词）</span>
+                {showAdvancedLlm ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
               </button>
-              <button
-                type="button"
-                className={styles.btnSecondary}
-                style={{ padding: '2px 8px', fontSize: '11px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
-                onClick={generateRandomSyncKey}
-              >
-                <Key size={11} /> 随机生成新口令
-              </button>
-            </div>
-          </div>
-          <div style={{ display: 'flex', gap: '8px', marginTop: '6px' }}>
-            <input
-              type="text"
-              value={formSettings.syncKey || ''}
-              onChange={e => setFormSettings({ ...formSettings, syncKey: e.target.value })}
-              placeholder="输入或生成同步口令 (至少 16 位，推荐随机生成)"
-              style={{ flex: 1 }}
-            />
-            <button
-              type="button"
-              className={styles.btnSecondary}
-              style={{ padding: '0 12px', fontSize: '12px', whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: '5px' }}
-              onClick={handleTestSync}
-              disabled={syncTestStatus.testing}
-            >
-              <RefreshCw size={12} className={syncTestStatus.testing ? styles.spinAnim : ''} />
-              {syncTestStatus.testing ? '检测中' : '测试连接'}
-            </button>
-          </div>
-          {formSettings.syncKey && formSettings.syncKey.trim().length > 0 && formSettings.syncKey.trim().length < 16 && (
-            <p style={{ fontSize: '11.5px', marginTop: '4px', color: 'var(--accent-rose)', display: 'flex', alignItems: 'center', gap: '4px' }}>
-              口令过短（当前 {formSettings.syncKey.trim().length} 位，需至少 16 位高熵字符以防暴力破解并启用端到端加密）
-            </p>
-          )}
-          {formSettings.syncKey && formSettings.syncKey.trim().length >= 16 && (
-            <p style={{ fontSize: '11.5px', marginTop: '4px', color: '#10b981', display: 'flex', alignItems: 'center', gap: '4px' }}>
-              <Check size={11} /> 口令强度达标，已启用客户端 AES-GCM 256 位端到端加密 (E2EE)
-            </p>
-          )}
-          {syncTestStatus.message && (
-            <p style={{
-              fontSize: '12px',
-              marginTop: '6px',
-              color: syncTestStatus.success ? '#10b981' : 'var(--accent-rose)',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '4px',
-            }}>
-              {syncTestStatus.success ? <Check size={12} /> : null}
-              {syncTestStatus.message}
-            </p>
-          )}
-          <p style={hintStyle}>
-            无需上传大体积 PDF。在不同设备输入相同口令并打开本地 PDF，系统将通过内容哈希自动拉取所有翻译与剪藏。所有数据均在本地经由口令端到端加密后再上传。
-          </p>
-        </div>
 
-        <div className={styles.formGroup} style={{ marginTop: '4px' }}>
-          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '12.5px' }}>
-            <input
-              type="checkbox"
-              checked={formSettings.autoCloudSync !== false}
-              onChange={e => setFormSettings({ ...formSettings, autoCloudSync: e.target.checked })}
-              style={{ width: '15px', height: '15px', accentColor: 'var(--primary)' }}
-            />
-            <span>翻译或剪藏时自动静默增量同步至 Cloudflare D1</span>
-          </label>
-        </div>
+              {showAdvancedLlm && (
+                <div className={styles.advancedPanel}>
+                  <div className={styles.formGroup}>
+                    <label>接口地址 (Base URL)</label>
+                    <input
+                      type="text"
+                      value={formSettings.baseUrl}
+                      onChange={e => setFormSettings({ ...formSettings, baseUrl: e.target.value })}
+                      placeholder="https://api.openai.com/v1"
+                    />
+                  </div>
 
-        {/* 系统提示词 */}
-        <div className={styles.settingsDivider} />
-        <div className={styles.formGroup}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <label>系统翻译提示词 (System Prompt)</label>
-            <button 
-              type="button" 
-              className={styles.btnSecondary} 
-              style={{ padding: '3px 8px', fontSize: '11px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
-              onClick={() => setFormSettings({ ...formSettings, customPrompt: '' })}
-              data-tooltip="清空后使用内置的出版级提示词"
-            >
-              <RotateCcw size={11} /> 恢复推荐提示词
-            </button>
-          </div>
-          <textarea 
-            rows={5}
-            value={formSettings.customPrompt} 
-            onChange={e => setFormSettings({ ...formSettings, customPrompt: e.target.value })}
-            placeholder={buildDefaultTranslatePrompt()}
-          />
-          <p style={hintStyle}>留空时使用内置提示词（上方灰色文字）。</p>
+                  <div className={styles.formGroup} style={{ marginBottom: 0 }}>
+                    <div className={styles.formLabelRow}>
+                      <label>系统翻译提示词 (System Prompt)</label>
+                      <button
+                        type="button"
+                        className={styles.modelQuickPill}
+                        onClick={() => setFormSettings({ ...formSettings, customPrompt: '' })}
+                      >
+                        <RotateCcw size={10} />
+                        <span>恢复默认出版级提示词</span>
+                      </button>
+                    </div>
+                    <textarea
+                      rows={4}
+                      value={formSettings.customPrompt}
+                      onChange={e =>
+                        setFormSettings({ ...formSettings, customPrompt: e.target.value })
+                      }
+                      placeholder={buildDefaultTranslatePrompt()}
+                    />
+                    <p className={styles.settingsHint}>留空时默认使用内置出版级信达雅提示词。</p>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
+          {activeTab === 'ocr' && (
+            <>
+              <div className={styles.formGroup}>
+                <label>识别引擎选择</label>
+                <div className={styles.presetGrid}>
+                  {OCR_MODEL_PRESETS.map(preset => {
+                    const active =
+                      (formSettings.ocr?.model || DEFAULT_OCR_SETTINGS.model) === preset.model;
+                    return (
+                      <button
+                        key={preset.model}
+                        type="button"
+                        className={`${styles.presetBtn} ${active ? styles.presetBtnActive : ''}`}
+                        onClick={() =>
+                          setFormSettings({
+                            ...formSettings,
+                            ocr: {
+                              ...(formSettings.ocr || DEFAULT_OCR_SETTINGS),
+                              model: preset.model,
+                            },
+                          })
+                        }
+                      >
+                        {preset.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className={styles.settingsHint}>
+                  针对影印古籍、扫描版书籍及复杂公式表格页面，提取高保真 Markdown 版面。前往{' '}
+                  <a
+                    href="https://aistudio.baidu.com/paddleocr"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    百度飞桨 AI Studio
+                  </a>{' '}
+                  可免费获取个人 Access Token。
+                </p>
+              </div>
+
+              <div className={styles.formGroup}>
+                <label>AI Studio Access Token</label>
+                <input
+                  type="password"
+                  value={formSettings.ocr?.apiToken || ''}
+                  onChange={e =>
+                    setFormSettings({
+                      ...formSettings,
+                      ocr: {
+                        ...(formSettings.ocr || DEFAULT_OCR_SETTINGS),
+                        apiToken: e.target.value,
+                      },
+                    })
+                  }
+                  placeholder="粘贴百度飞桨 AI Studio Access Token"
+                />
+              </div>
+
+              <div className={styles.formGroup}>
+                <div className={styles.formLabelRow}>
+                  <label>PaddleOCR 接口地址（可选）</label>
+                  <button
+                    type="button"
+                    className={styles.modelQuickPill}
+                    onClick={() =>
+                      setFormSettings({
+                        ...formSettings,
+                        ocr: {
+                          ...(formSettings.ocr || DEFAULT_OCR_SETTINGS),
+                          apiUrl: DEFAULT_OCR_SETTINGS.apiUrl,
+                        },
+                      })
+                    }
+                  >
+                    <RotateCcw size={10} />
+                    <span>恢复默认</span>
+                  </button>
+                </div>
+                <input
+                  type="text"
+                  value={formSettings.ocr?.apiUrl || ''}
+                  onChange={e =>
+                    setFormSettings({
+                      ...formSettings,
+                      ocr: {
+                        ...(formSettings.ocr || DEFAULT_OCR_SETTINGS),
+                        apiUrl: e.target.value,
+                      },
+                    })
+                  }
+                  placeholder={DEFAULT_OCR_SETTINGS.apiUrl}
+                />
+              </div>
+            </>
+          )}
+
+          {activeTab === 'sync' && (
+            <>
+              <div className={styles.formGroup}>
+                <div className={styles.formLabelRow}>
+                  <label>端到端加密同步口令 (Sync Key)</label>
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    <button
+                      type="button"
+                      className={styles.modelQuickPill}
+                      onClick={generateRandomSyncKey}
+                    >
+                      <Key size={11} />
+                      <span>随机生成新口令</span>
+                    </button>
+                    <button
+                      type="button"
+                      className={styles.modelQuickPill}
+                      onClick={() => {
+                        onClose();
+                        router.push('/sync');
+                      }}
+                    >
+                      <span>管理云端书架 →</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <input
+                    type="text"
+                    value={formSettings.syncKey || ''}
+                    onChange={e => setFormSettings({ ...formSettings, syncKey: e.target.value })}
+                    placeholder="至少 16 位字符，推荐点击右上角随机生成"
+                    style={{ flex: 1 }}
+                  />
+                  <button
+                    type="button"
+                    className={styles.btnSecondary}
+                    onClick={handleTestSync}
+                    disabled={syncTestStatus.testing}
+                    style={{ whiteSpace: 'nowrap' }}
+                  >
+                    <RefreshCw size={13} className={syncTestStatus.testing ? styles.spinAnim : ''} />
+                    <span>{syncTestStatus.testing ? '检测中' : '测试连接'}</span>
+                  </button>
+                </div>
+
+                {formSettings.syncKey &&
+                  formSettings.syncKey.trim().length > 0 &&
+                  formSettings.syncKey.trim().length < 16 && (
+                    <p className={styles.statusInlineError}>
+                      当前 {formSettings.syncKey.trim().length} 位，需至少 16 位字符以启用 AES-GCM 端到端加密
+                    </p>
+                  )}
+
+                {formSettings.syncKey && formSettings.syncKey.trim().length >= 16 && (
+                  <p className={styles.statusInlineSuccess}>
+                    <Check size={12} />
+                    <span>口令强度达标，本地 AES-GCM 256 位加密已就绪</span>
+                  </p>
+                )}
+
+                {syncTestStatus.message && (
+                  <p
+                    className={
+                      syncTestStatus.success ? styles.statusInlineSuccess : styles.statusInlineError
+                    }
+                  >
+                    {syncTestStatus.message}
+                  </p>
+                )}
+
+                <p className={styles.settingsHint}>
+                  无需上传体积庞大的 PDF 原件。多台设备输入相同口令并打开同一本本地 PDF，即按文件 SHA-256 指纹自动拉取已译章节、阅读进度与书摘。
+                </p>
+              </div>
+
+              <label className={styles.checkboxRow}>
+                <input
+                  type="checkbox"
+                  checked={formSettings.autoCloudSync !== false}
+                  onChange={e =>
+                    setFormSettings({ ...formSettings, autoCloudSync: e.target.checked })
+                  }
+                />
+                <span>翻译、翻页或新增书摘时静默增量同步至云端</span>
+              </label>
+            </>
+          )}
         </div>
 
         <div className={styles.modalActions}>
-          <a 
-            href="https://justganit.com" 
-            target="_blank" 
-            rel="noopener noreferrer" 
-            className={styles.btnSecondary}
-            style={{ marginRight: 'auto', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
-            data-tooltip="访问 JustGanIt 探索更多 AI 工具"
+          <a
+            href="https://justganit.com"
+            target="_blank"
+            rel="noopener noreferrer"
+            className={styles.formExternalLink}
+            style={{ marginRight: 'auto', display: 'inline-flex', alignItems: 'center', gap: '5px' }}
           >
-            <Globe size={14} /> 联系开发者 (JustGanIt)
+            <Globe size={13} />
+            <span>JustGanIt</span>
           </a>
-          <button type="button" className={styles.btnSecondary} onClick={onClose}>取消</button>
-          <button type="button" className={styles.btn} onClick={saveSettings}>保存设置</button>
+          <button type="button" className={styles.btnSecondary} onClick={onClose}>
+            取消
+          </button>
+          <button type="button" className={styles.btn} onClick={saveSettings}>
+            保存设置
+          </button>
         </div>
       </div>
     </div>

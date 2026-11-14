@@ -5,7 +5,7 @@ import { Document, Page, pdfjs } from 'react-pdf';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
 import styles from '@/app/page.module.css';
-import { PdfHeader, PdfHeaderProps } from './PdfHeader';
+import { Minus, Plus } from 'lucide-react';
 
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import type { TextItem } from 'pdfjs-dist/types/src/display/api';
@@ -21,13 +21,19 @@ if (!pdfjs.GlobalWorkerOptions.workerSrc) {
   ).toString();
 }
 
-export interface PdfPaneProps extends PdfHeaderProps {
+export interface PdfPaneProps {
   file: File | null;
   leftPaneRef: React.RefObject<HTMLDivElement | null>;
   pdfWrapperRef: React.RefObject<HTMLDivElement | null>;
   leftPaneWidth: number;
   isImmersive: boolean;
   pdfRenderWidth: number;
+  zoomScale: number;
+  onZoomIn: () => void;
+  onZoomOut: () => void;
+  onResetZoom: () => void;
+  dimPdfInDark?: boolean;
+  pageNumber: number;
   exactHighlightSpans: Array<{ left: number; top: number; width: number; height: number }>;
   onDocumentLoadSuccess: (pdf: PDFDocumentProxy) => void;
   onPdfSelection: () => void;
@@ -48,6 +54,10 @@ export function PdfPane({
   isImmersive,
   pdfRenderWidth,
   zoomScale,
+  onZoomIn,
+  onZoomOut,
+  onResetZoom,
+  dimPdfInDark = true,
   pageNumber,
   exactHighlightSpans,
   onDocumentLoadSuccess,
@@ -59,15 +69,13 @@ export function PdfPane({
   clips = [],
   onClippedSpanClick,
   pdfTextItems = [],
-  ...headerProps
 }: PdfPaneProps) {
   const origWidth = pdfOriginalView[2] || 600;
   const currentRenderW = pdfRenderWidth * zoomScale;
   const scale = origWidth > 0 ? currentRenderW / origWidth : 1;
 
   const handlePdfMouseMove = (e: React.MouseEvent) => {
-    if (e.buttons > 0) return; // 正在按住鼠标拖拽选词时，禁止触发 Hover 切换与重绘
-    // 当存在活跃划词高亮或正在聚焦句子时，锁定聚焦段落，禁止鼠标游走触发全局重绘和边框抖动闪烁
+    if (e.buttons > 0) return;
     if (exactHighlightSpans.length > 0) return;
     if (!sourceBlocks || sourceBlocks.length === 0 || !pdfWrapperRef.current) return;
     const wrapper = pdfWrapperRef.current;
@@ -86,20 +94,18 @@ export function PdfPane({
       if (hoveredBlockId !== found.id) {
         onHoverBlock?.(found.id);
       }
-    } else {
-      if (hoveredBlockId) {
-        onHoverBlock?.(null);
-      }
+    } else if (hoveredBlockId) {
+      onHoverBlock?.(null);
     }
   };
 
-  // 计算原文页面中的已剪藏虚线下划线高亮矩形
+  // 计算原文页面中的已书摘虚线下划线高亮矩形
   const clippedSpans = React.useMemo(() => {
     if (!clips || clips.length === 0 || !pdfTextItems || pdfTextItems.length === 0) return [];
     const validItems = pdfTextItems.filter(item => item.str && item.str.trim() && item.transform);
     if (validItems.length === 0) return [];
 
-    // 原文左侧 PDF 只对英文/原文剪藏卡片绘制下划线，含有中文字符的译文剪藏绝不跨屏误绘
+    // 原文左侧 PDF 只对英文/原文书摘卡片绘制下划线，含有中文字符的译文书摘绝不跨屏误绘
     const pageClips = clips.filter(
       c => c.pageNumber === pageNumber && c.text && c.text.trim() && !/[\u4e00-\u9fa5]/.test(c.text)
     );
@@ -127,18 +133,16 @@ export function PdfPane({
     return result;
   }, [clips, pdfTextItems, pageNumber, pdfOriginalView, scale]);
 
+  const zoomPercent = Math.round(zoomScale * 100);
+
   return (
     <div
       ref={leftPaneRef}
-      className={`${styles.leftPane} ${isImmersive ? styles.hiddenPane : ''}`}
-      style={{ flexBasis: `calc(${leftPaneWidth}% - 6px)`, flexGrow: 0, flexShrink: 0 }}
+      className={`${styles.leftPane} ${isImmersive ? styles.hiddenPane : ''} ${
+        dimPdfInDark ? 'pdf-night-dim' : ''
+      }`}
+      style={{ flexBasis: `calc(${leftPaneWidth}% - 3px)`, flexGrow: 0, flexShrink: 0 }}
     >
-      <PdfHeader
-        zoomScale={zoomScale}
-        pageNumber={pageNumber}
-        {...headerProps}
-      />
-
       <div
         className={styles.pdfWrapper}
         ref={pdfWrapperRef}
@@ -190,7 +194,7 @@ export function PdfPane({
                   />
                 );
               })}
-              {/* 划词精准荧光高亮 */}
+              {/* 书摘跳转精准定位高亮 */}
               {exactHighlightSpans.map((rect, idx) => (
                 <span
                   key={idx}
@@ -203,7 +207,7 @@ export function PdfPane({
                   }}
                 />
               ))}
-              {/* 原文已剪藏虚线下划线标记 */}
+              {/* 原文已书摘虚线下划线标记 */}
               {clippedSpans.map(({ clip, rect, key }) => (
                 <span
                   key={key}
@@ -219,12 +223,44 @@ export function PdfPane({
                     e.stopPropagation();
                     onClippedSpanClick?.(e, clip);
                   }}
-                  title={`已剪藏: ${clip.text}（点击唤起微岛）`}
+                  title={`已存书摘: ${clip.text}`}
                 />
               ))}
             </div>
           </Document>
         )}
+      </div>
+
+      {/* 左下角克制悬浮缩放胶囊 */}
+      <div className={styles.pdfZoomBar} data-interactive-protected="true">
+        <button
+          type="button"
+          className={styles.pdfZoomBtn}
+          onClick={onZoomOut}
+          disabled={zoomScale <= 0.61}
+          aria-label="缩小原文"
+          title="缩小原文"
+        >
+          <Minus size={12} />
+        </button>
+        <button
+          type="button"
+          className={styles.pdfZoomReset}
+          onClick={onResetZoom}
+          title="点击复位 100% 适配页宽"
+        >
+          {zoomPercent}%
+        </button>
+        <button
+          type="button"
+          className={styles.pdfZoomBtn}
+          onClick={onZoomIn}
+          disabled={zoomScale >= 1.99}
+          aria-label="放大原文"
+          title="放大原文"
+        >
+          <Plus size={12} />
+        </button>
       </div>
     </div>
   );

@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAppContext } from '@/context/AppContext';
+import { useToast } from '@/components/Toast';
 import { isStrongSyncKey, generateStrongSyncKey } from '@/lib/crypto';
 import {
   fetchCloudBookshelf,
@@ -36,26 +37,35 @@ function formatTimestamp(timestamp?: number): string {
   if (diff < 60 * 60 * 1000) return `${Math.floor(diff / (60 * 1000))} 分钟前`;
   if (diff < 24 * 60 * 60 * 1000) return `${Math.floor(diff / (60 * 60 * 1000))} 小时前`;
   const date = new Date(timestamp);
-  return `${date.toLocaleDateString()} ${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+  return `${date.toLocaleDateString()} ${date.toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+  })}`;
 }
 
 export default function CloudSyncPage() {
   const router = useRouter();
   const { settings, setSettings, theme, toggleTheme } = useAppContext();
+  const { showToast } = useToast();
 
   const [syncKey, setSyncKey] = useState<string>(settings.syncKey || '');
   const [autoCloudSync, setAutoCloudSync] = useState<boolean>(settings.autoCloudSync !== false);
   const [copied, setCopied] = useState<boolean>(false);
-  const [saveSuccess, setSaveSuccess] = useState<boolean>(false);
-  const [testStatus, setTestStatus] = useState<{ testing: boolean; message?: string; success?: boolean }>({
-    testing: false,
-  });
+  const [confirmClearKey, setConfirmClearKey] = useState<boolean>(false);
+  const [confirmDeleteFingerprint, setConfirmDeleteFingerprint] = useState<string | null>(null);
+
+  const [testStatus, setTestStatus] = useState<{
+    testing: boolean;
+    message?: string;
+    success?: boolean;
+  }>({ testing: false });
 
   const [cloudBooks, setCloudBooks] = useState<CloudBookMeta[]>([]);
-  const [loadingBooks, setLoadingBooks] = useState<boolean>(() => isStrongSyncKey(settings.syncKey));
+  const [loadingBooks, setLoadingBooks] = useState<boolean>(() =>
+    isStrongSyncKey(settings.syncKey)
+  );
   const [deletingHash, setDeletingHash] = useState<string | null>(null);
 
-  // 初始化加载云端书架
   useEffect(() => {
     if (!settings.syncKey?.trim() || !isStrongSyncKey(settings.syncKey)) return;
     fetchCloudBookshelf(settings.syncKey)
@@ -64,23 +74,31 @@ export default function CloudSyncPage() {
       .finally(() => setLoadingBooks(false));
   }, [settings.syncKey]);
 
-  // 一键复制口令
   const handleCopyKey = () => {
     if (!syncKey) return;
     navigator.clipboard.writeText(syncKey).then(() => {
       setCopied(true);
+      showToast('同步口令已复制到剪贴板', 'success');
       setTimeout(() => setCopied(false), 2000);
     });
   };
 
-  // 生成强随机高熵口令
   const handleGenerateKey = () => {
     const newKey = generateStrongSyncKey();
     setSyncKey(newKey);
+    setConfirmClearKey(false);
     setTestStatus({ testing: false });
   };
 
-  // 测试云端连接
+  const loadCloudBooks = (keyToUse: string) => {
+    if (!isStrongSyncKey(keyToUse)) return;
+    setLoadingBooks(true);
+    fetchCloudBookshelf(keyToUse)
+      .then(b => setCloudBooks(b || []))
+      .catch(err => console.error('Failed to load cloud bookshelf:', err))
+      .finally(() => setLoadingBooks(false));
+  };
+
   const handleTestConnection = async () => {
     if (!syncKey.trim()) {
       setTestStatus({ testing: false, success: false, message: '请先输入或生成同步口令' });
@@ -101,9 +119,8 @@ export default function CloudSyncPage() {
       setTestStatus({
         testing: false,
         success: true,
-        message: `连接成功！云端已有此口令下的 ${res.count} 本书籍同步记录。`,
+        message: `连接成功，云端已有此口令下的 ${res.count} 本书籍同步记录。`,
       });
-      // 顺便刷新云端书架
       loadCloudBooks(syncKey);
     } else {
       setTestStatus({
@@ -114,23 +131,12 @@ export default function CloudSyncPage() {
     }
   };
 
-  // 刷新云端书籍列表
-  const loadCloudBooks = (keyToUse: string) => {
-    if (!isStrongSyncKey(keyToUse)) return;
-    setLoadingBooks(true);
-    fetchCloudBookshelf(keyToUse)
-      .then(b => setCloudBooks(b || []))
-      .catch(err => console.error('Failed to load cloud bookshelf:', err))
-      .finally(() => setLoadingBooks(false));
-  };
-
-  // 保存设置
   const handleSaveSettings = () => {
     if (syncKey.trim() && !isStrongSyncKey(syncKey)) {
       setTestStatus({
         testing: false,
         success: false,
-        message: '保存失败：口令长度不足 16 位字符，请使用更长的口令或点击“生成高熵口令”',
+        message: '保存未通过：口令长度不足 16 位字符，请使用更长口令或点击「生成高熵口令」',
       });
       return;
     }
@@ -141,37 +147,35 @@ export default function CloudSyncPage() {
       autoCloudSync,
     });
 
-    setSaveSuccess(true);
-    setTimeout(() => setSaveSuccess(false), 2500);
+    showToast('云端同步设置已保存', 'success');
 
     if (syncKey.trim()) {
       loadCloudBooks(syncKey.trim());
     }
   };
 
-  // 清除口令
-  const handleClearKey = () => {
-    if (confirm('确定要清除本机的同步口令吗？（云端已存储的数据不会被删除，可在重新输入口令后恢复）')) {
-      setSyncKey('');
-      setSettings({
-        ...settings,
-        syncKey: '',
-      });
-      setCloudBooks([]);
-      setTestStatus({ testing: false });
-    }
+  const executeClearKey = () => {
+    setSyncKey('');
+    setSettings({
+      ...settings,
+      syncKey: '',
+    });
+    setCloudBooks([]);
+    setConfirmClearKey(false);
+    setTestStatus({ testing: false });
+    showToast('已清除本机同步口令（云端加密数据仍保留）');
   };
 
-  // 删除单本云端书籍记录
-  const handleDeleteBook = async (fingerprint: string, filename: string) => {
-    if (!confirm(`确定要从云端删除《${filename}》的所有同步翻译与剪藏吗？`)) return;
+  const executeDeleteBook = async (fingerprint: string) => {
     setDeletingHash(fingerprint);
     const ok = await deleteBookFromCloud(syncKey, fingerprint);
     setDeletingHash(null);
+    setConfirmDeleteFingerprint(null);
     if (ok) {
       setCloudBooks(prev => prev.filter(b => b.bookFingerprint !== fingerprint));
+      showToast('已从云端移除该书同步记录', 'success');
     } else {
-      alert('从云端删除失败，请检查网络或口令有效性');
+      showToast('从云端删除失败，请检查网络或口令有效性', 'error');
     }
   };
 
@@ -179,70 +183,87 @@ export default function CloudSyncPage() {
 
   return (
     <div className={styles.homeContainer}>
-      {/* 顶部导航栏 */}
       <header className={styles.homeHeader}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
           <button
             type="button"
-            className={styles.headerBtn}
+            className={styles.backShelfBtn}
             onClick={() => router.push('/')}
-            data-tooltip="返回书架主页"
           >
-            <ArrowLeft size={15} />
-            <span>返回主页</span>
+            <ArrowLeft size={14} />
+            <span>返回书架</span>
           </button>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <Cloud size={18} style={{ color: 'var(--primary)' }} />
-            <h1 style={{ fontSize: '18px', margin: 0, fontWeight: 600 }}>云端多端同步中心</h1>
+          <span className={styles.headerDivider} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
+            <Cloud size={16} style={{ color: 'var(--primary)' }} />
+            <h1 style={{ fontSize: '15px', margin: 0, fontWeight: 600 }}>多端云同步与加密书架</h1>
           </div>
         </div>
 
         <div className={styles.controls}>
           <button
             type="button"
-            className={styles.headerBtn}
+            className={styles.headerIconSquareBtn}
             onClick={toggleTheme}
-            data-tooltip="切换深色/浅色模式"
+            aria-label={theme === 'dark' ? '切换为暖白纸感模式' : '切换为深色夜间模式'}
+            title={theme === 'dark' ? '切换为暖白纸感模式' : '切换为深色夜间模式'}
           >
             {theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
-            <span>{theme === 'dark' ? '浅色模式' : '深色模式'}</span>
           </button>
         </div>
       </header>
 
-      {/* 主体内容 */}
       <main className={styles.syncPageContainer}>
         {/* 卡片 1: 同步口令管理 */}
         <div className={styles.syncCard}>
           <div className={styles.syncCardHeader}>
             <h2 className={styles.syncCardTitle}>
-              <Key size={17} style={{ color: 'var(--primary)' }} /> 同步口令与加密凭据 (Sync Key)
+              <Key size={16} style={{ color: 'var(--primary)' }} />
+              <span>端到端加密同步口令</span>
             </h2>
-            <div style={{ display: 'flex', gap: '8px' }}>
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
               <button
                 type="button"
-                className={styles.headerBtn}
-                style={{ height: '32px', fontSize: '12px' }}
+                className={styles.btnSmSecondary}
                 onClick={handleGenerateKey}
-                data-tooltip="生成 37 位不可穷举的高熵安全口令"
               >
-                <Key size={13} /> 生成高熵口令
+                <Key size={13} />
+                <span>生成高熵口令</span>
               </button>
+
               {settings.syncKey && (
-                <button
-                  type="button"
-                  className={styles.headerBtn}
-                  style={{ height: '32px', fontSize: '12px', color: 'var(--accent-rose)' }}
-                  onClick={handleClearKey}
-                >
-                  清除口令
-                </button>
+                confirmClearKey ? (
+                  <>
+                    <button
+                      type="button"
+                      className={styles.btnSmDanger}
+                      onClick={executeClearKey}
+                    >
+                      确认清除本机口令
+                    </button>
+                    <button
+                      type="button"
+                      className={styles.btnSmSecondary}
+                      onClick={() => setConfirmClearKey(false)}
+                    >
+                      取消
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    className={styles.btnSmDangerOutline}
+                    onClick={() => setConfirmClearKey(true)}
+                  >
+                    清除本机口令
+                  </button>
+                )
               )}
             </div>
           </div>
 
-          <p style={{ fontSize: '13px', color: '#8e8e93', margin: 0, lineHeight: 1.6 }}>
-            同步口令是您跨设备共享书籍翻译与重点摘录的唯一密钥。在所有需要同步的设备上输入同一口令即可自动对齐。
+          <p className={styles.settingsHint} style={{ margin: 0 }}>
+            同步口令是跨设备共享译文、阅读进度与书摘的唯一派生密钥。在不同设备填入相同口令即可自动对齐，服务器不保存明文。
           </p>
 
           <div className={styles.syncKeyDisplayBox}>
@@ -250,93 +271,79 @@ export default function CloudSyncPage() {
               type="text"
               value={syncKey}
               onChange={e => setSyncKey(e.target.value)}
-              placeholder="输入或生成您的安全同步口令 (至少 16 位字符)"
+              placeholder="输入或生成安全同步口令（至少 16 位字符）"
               className={styles.syncKeyInput}
             />
             {syncKey && (
               <button
                 type="button"
-                className={styles.iconBtn}
+                className={styles.iconFieldBtn}
                 onClick={handleCopyKey}
-                data-tooltip={copied ? '已复制到剪贴板' : '一键复制口令'}
+                title="复制口令"
               >
-                {copied ? <Check size={14} style={{ color: '#10b981' }} /> : <Copy size={14} />}
+                {copied ? <Check size={15} style={{ color: 'var(--accent-emerald)' }} /> : <Copy size={15} />}
               </button>
             )}
           </div>
 
-          {/* 实时口令安全强度提示 */}
           <div className={styles.syncBadgeRow}>
             {syncKey.trim().length === 0 ? (
-              <span className={styles.syncSecurityBadge} style={{ background: 'rgba(255,255,255,0.05)', color: '#8e8e93' }}>
-                <Info size={12} /> 尚未配置同步口令
+              <span className={styles.syncSecurityBadge}>
+                <Info size={12} />
+                <span>尚未配置同步口令</span>
               </span>
             ) : !isKeyValid ? (
-              <span className={styles.syncSecurityBadge} style={{ background: 'rgba(239, 68, 68, 0.1)', color: 'var(--accent-rose)', border: '1px solid rgba(239, 68, 68, 0.2)' }}>
-                <AlertTriangle size={12} /> 口令过短（当前 {syncKey.trim().length} 位，需至少 16 位字符以防暴力破解）
+              <span
+                className={styles.syncSecurityBadge}
+                style={{ color: 'var(--accent-rose)', borderColor: 'rgba(181, 51, 51, 0.25)' }}
+              >
+                <AlertTriangle size={12} />
+                <span>当前 {syncKey.trim().length} 位，需至少 16 位字符</span>
               </span>
             ) : (
               <>
-                <span className={styles.syncSecurityBadge} style={{ background: 'rgba(16, 185, 129, 0.1)', color: '#10b981', border: '1px solid rgba(16, 185, 129, 0.2)' }}>
-                  <ShieldCheck size={12} /> 16+ 位高熵凭据已就绪
+                <span
+                  className={styles.syncSecurityBadge}
+                  style={{ color: 'var(--accent-emerald)', borderColor: 'rgba(47, 111, 78, 0.25)' }}
+                >
+                  <ShieldCheck size={12} />
+                  <span>16+ 位高熵凭据已就绪</span>
                 </span>
-                <span className={styles.syncSecurityBadge} style={{ background: 'rgba(59, 130, 246, 0.1)', color: '#3b82f6', border: '1px solid rgba(59, 130, 246, 0.2)' }}>
-                  <Lock size={12} /> 客户端 AES-GCM 256 位端到端加密已启用
+                <span className={styles.syncSecurityBadge}>
+                  <Lock size={12} />
+                  <span>客户端 AES-GCM 256 位加密已启用</span>
                 </span>
               </>
             )}
           </div>
 
-          {/* 测试连接反馈 */}
           {testStatus.message && (
-            <div
-              style={{
-                fontSize: '12.5px',
-                padding: '8px 12px',
-                borderRadius: '8px',
-                background: testStatus.success ? 'rgba(16, 185, 129, 0.08)' : 'rgba(239, 68, 68, 0.08)',
-                color: testStatus.success ? '#10b981' : 'var(--accent-rose)',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '6px',
-              }}
-            >
-              {testStatus.success ? <Check size={14} /> : <AlertTriangle size={14} />}
+            <p className={testStatus.success ? styles.statusInlineSuccess : styles.statusInlineError}>
               {testStatus.message}
-            </div>
+            </p>
           )}
 
-          {/* 自动同步开关 */}
-          <div style={{ marginTop: '4px' }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px' }}>
-              <input
-                type="checkbox"
-                checked={autoCloudSync}
-                onChange={e => setAutoCloudSync(e.target.checked)}
-                style={{ width: '16px', height: '16px', accentColor: 'var(--primary)' }}
-              />
-              <span>阅读翻页或划线笔记时自动静默增量同步至云端</span>
-            </label>
-          </div>
+          <label className={styles.checkboxRow}>
+            <input
+              type="checkbox"
+              checked={autoCloudSync}
+              onChange={e => setAutoCloudSync(e.target.checked)}
+            />
+            <span>阅读翻页、翻译或划线书摘时静默增量同步至云端</span>
+          </label>
 
-          {/* 底部保存与测试按钮 */}
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '8px' }}>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '4px' }}>
             <button
               type="button"
-              className={styles.headerBtn}
+              className={styles.btnSecondary}
               onClick={handleTestConnection}
               disabled={testStatus.testing || !syncKey.trim()}
             >
               <RefreshCw size={13} className={testStatus.testing ? styles.spinAnim : ''} />
-              <span>{testStatus.testing ? '检测中...' : '测试云端连接'}</span>
+              <span>{testStatus.testing ? '检测中...' : '测试连接'}</span>
             </button>
-            <button
-              type="button"
-              className={`${styles.headerBtn} ${styles.headerBtnPrimary}`}
-              onClick={handleSaveSettings}
-            >
-              {saveSuccess ? <Check size={14} /> : null}
-              <span>{saveSuccess ? '已成功保存' : '保存口令与设置'}</span>
+            <button type="button" className={styles.btn} onClick={handleSaveSettings}>
+              <span>保存口令与设置</span>
             </button>
           </div>
         </div>
@@ -345,32 +352,29 @@ export default function CloudSyncPage() {
         <div className={styles.syncCard}>
           <div className={styles.syncCardHeader}>
             <h2 className={styles.syncCardTitle}>
-              <Cloud size={17} style={{ color: 'var(--primary)' }} /> 云端已同步文档库 ({cloudBooks.length})
+              <Cloud size={16} style={{ color: 'var(--primary)' }} />
+              <span>云端已同步书籍 ({cloudBooks.length})</span>
             </h2>
             {isKeyValid && (
               <button
                 type="button"
-                className={styles.iconBtn}
+                className={styles.headerIconBtn}
                 onClick={() => loadCloudBooks(syncKey)}
-                data-tooltip="刷新云端书架"
+                title="刷新云端书架"
                 disabled={loadingBooks}
               >
-                <RefreshCw size={13} className={loadingBooks ? styles.spinAnim : ''} />
+                <RefreshCw size={14} className={loadingBooks ? styles.spinAnim : ''} />
               </button>
             )}
           </div>
 
           {!isKeyValid ? (
-            <div style={{ padding: '32px 16px', textAlign: 'center', color: '#8e8e93', fontSize: '13px' }}>
-              请先在上方输入并保存合法的同步口令以查看此口令下的云端书籍。
-            </div>
+            <div className={styles.emptyText}>请先输入并保存合法同步口令以查看云端同步记录。</div>
           ) : loadingBooks ? (
-            <div style={{ padding: '32px 16px', textAlign: 'center', color: '#8e8e93', fontSize: '13px' }}>
-              正在加载云端书架数据...
-            </div>
+            <div className={styles.emptyText}>正在读取云端书架记录...</div>
           ) : cloudBooks.length === 0 ? (
-            <div style={{ padding: '32px 16px', textAlign: 'center', color: '#8e8e93', fontSize: '13px' }}>
-              当前口令下暂无云端书籍。在任何设备打开 PDF 文档并开启自动同步，即可在此查看多端同步记录。
+            <div className={styles.emptyText}>
+              当前口令下尚无云端记录。在任意设备打开 PDF 阅读并开启自动同步即可在此查看。
             </div>
           ) : (
             <div style={{ overflowX: 'auto' }}>
@@ -378,9 +382,9 @@ export default function CloudSyncPage() {
                 <thead>
                   <tr>
                     <th>书籍名称</th>
-                    <th>总页数</th>
-                    <th>续读进度</th>
-                    <th>最后更新时间</th>
+                    <th>页数</th>
+                    <th>阅读进度</th>
+                    <th>最近同步</th>
                     <th style={{ textAlign: 'right' }}>操作</th>
                   </tr>
                 </thead>
@@ -389,29 +393,53 @@ export default function CloudSyncPage() {
                     <tr key={book.bookFingerprint} className={styles.syncBookRow}>
                       <td>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          <FileText size={15} style={{ color: 'var(--primary)', flexShrink: 0 }} />
+                          <FileText size={14} style={{ color: 'var(--primary)', flexShrink: 0 }} />
                           <span style={{ fontWeight: 500 }} title={book.filename}>
                             {book.filename}
                           </span>
                         </div>
                       </td>
-                      <td>{book.totalPages > 0 ? `${book.totalPages} 页` : '-'}</td>
+                      <td>{book.totalPages > 0 ? `${book.totalPages} 页` : '–'}</td>
                       <td>
-                        <span className={styles.badgeSubtle}>
-                          第 {book.lastReadPage || 1} 页
-                        </span>
+                        <span className={styles.badgeSubtle}>第 {book.lastReadPage || 1} 页</span>
                       </td>
-                      <td>{formatTimestamp(book.updatedAt)}{book.legacy ? '（旧版数据，打开该书后自动迁移）' : ''}</td>
+                      <td>
+                        {formatTimestamp(book.updatedAt)}
+                        {book.legacy ? '（旧版只读）' : ''}
+                      </td>
                       <td style={{ textAlign: 'right' }}>
-                        <button
-                          type="button"
-                          className={styles.deleteBtn}
-                          onClick={() => handleDeleteBook(book.bookFingerprint, book.filename)}
-                          disabled={book.legacy || deletingHash === book.bookFingerprint}
-                          data-tooltip={book.legacy ? '旧版数据只读，迁移后可删除' : '从云端彻底删除此书籍的同步记录'}
-                        >
-                          <Trash2 size={13} />
-                        </button>
+                        {confirmDeleteFingerprint === book.bookFingerprint ? (
+                          <div
+                            className={styles.inlineConfirmGroup}
+                            style={{ justifyContent: 'flex-end' }}
+                          >
+                            <button
+                              type="button"
+                              className={styles.inlineConfirmDanger}
+                              disabled={deletingHash === book.bookFingerprint}
+                              onClick={() => executeDeleteBook(book.bookFingerprint)}
+                            >
+                              {deletingHash === book.bookFingerprint ? '移除中...' : '确认删除'}
+                            </button>
+                            <button
+                              type="button"
+                              className={styles.inlineConfirmCancel}
+                              onClick={() => setConfirmDeleteFingerprint(null)}
+                            >
+                              取消
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            className={styles.deleteBtn}
+                            onClick={() => setConfirmDeleteFingerprint(book.bookFingerprint)}
+                            disabled={book.legacy || deletingHash === book.bookFingerprint}
+                            title={book.legacy ? '旧版数据打开后自动迁移' : '从云端删除此书同步记录'}
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -421,34 +449,29 @@ export default function CloudSyncPage() {
           )}
         </div>
 
-        {/* 卡片 3: 安全与隐私机制说明 */}
+        {/* 卡片 3: 安全与隐私架构说明 */}
         <div className={styles.syncCard}>
-          <h2 className={styles.syncCardTitle} style={{ fontSize: '15px' }}>
-            <ShieldCheck size={16} style={{ color: '#10b981' }} /> 多端同步安全与隐私保护架构
+          <h2 className={styles.syncCardTitle}>
+            <ShieldCheck size={16} style={{ color: 'var(--accent-emerald)' }} />
+            <span>隐私与端到端加密说明</span>
           </h2>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '16px', marginTop: '6px' }}>
-            <div style={{ background: 'var(--card-bg)', border: '1px solid var(--card-border)', borderRadius: '10px', padding: '14px' }}>
-              <h4 style={{ margin: '0 0 6px 0', fontSize: '13px', fontWeight: 600, color: 'var(--foreground)' }}>
-                1. 零原文件上传
-              </h4>
-              <p style={{ margin: 0, fontSize: '12px', color: '#8e8e93', lineHeight: 1.5 }}>
-                云端数据库完全不接收也不保存任何 PDF 原文文件。多端之间基于本地文件的 SHA-256 二进制指纹秒级匹配，原文件始终完全留在您的设备本地。
+          <div className={styles.securityGrid}>
+            <div className={styles.securityFeatureCard}>
+              <h4>1. 零原文件上传</h4>
+              <p>
+                云端不接收也不存储任何 PDF 原件。多端通过本地 PDF 的 SHA-256 内容指纹自动识别匹配，原书始终留在本地设备。
               </p>
             </div>
-            <div style={{ background: 'var(--card-bg)', border: '1px solid var(--card-border)', borderRadius: '10px', padding: '14px' }}>
-              <h4 style={{ margin: '0 0 6px 0', fontSize: '13px', fontWeight: 600, color: 'var(--foreground)' }}>
-                2. 客户端端到端加密 (E2EE)
-              </h4>
-              <p style={{ margin: 0, fontSize: '12px', color: '#8e8e93', lineHeight: 1.5 }}>
-                译文、剪藏与书籍信息在离开浏览器前，用口令派生出的 AES-GCM 256 位密钥在本地加密。口令本身不会发送到服务器：服务器只收到另一把由口令派生的凭证，并只保存该凭证的哈希值，无法据此解密数据。
+            <div className={styles.securityFeatureCard}>
+              <h4>2. 本地 AES-GCM 加密</h4>
+              <p>
+                译文、书摘与书名在离开浏览器前即用口令派生密钥完成 256 位加密。服务器仅保存派生认证哈希，无法逆向解密任何内容。
               </p>
             </div>
-            <div style={{ background: 'var(--card-bg)', border: '1px solid var(--card-border)', borderRadius: '10px', padding: '14px' }}>
-              <h4 style={{ margin: '0 0 6px 0', fontSize: '13px', fontWeight: 600, color: 'var(--foreground)' }}>
-                3. 免注册与多端合并
-              </h4>
-              <p style={{ margin: 0, fontSize: '12px', color: '#8e8e93', lineHeight: 1.5 }}>
-                无需手机号或邮箱，推荐使用随机生成的口令（122 位随机数）。每页译文、每条剪藏单独同步，多台设备同时使用时按修改时间保留较新的一份，删除操作也会同步。请妥善保存口令，遗失后无法找回云端数据。
+            <div className={styles.securityFeatureCard}>
+              <h4>3. 按页增量合并</h4>
+              <p>
+                无需注册账号。每页译文与每条书摘按时间戳独立合并，多设备交替阅读也不会互相覆盖。请妥善保管口令。
               </p>
             </div>
           </div>
